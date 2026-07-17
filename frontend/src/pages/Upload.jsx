@@ -1,26 +1,77 @@
-import { useRef } from 'react'
+import { useState, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Upload as UploadIcon, Camera, Sparkles, X } from 'lucide-react'
+import { Camera, Upload as UploadIcon, Sparkles, X, ArrowRight, RotateCcw, Shirt, Eye } from 'lucide-react'
 import { useApp } from '../AppContext'
+import { extractAnchorAttributes } from '../services/api'
 import Stepper from '../components/Stepper'
 
 const FLOW = ['Upload', 'Details', 'Verify', 'Publish']
 
+const ANCHOR_STEPS = [
+  {
+    key: 'front',
+    title: 'Front view',
+    instruction: 'Place the garment flat on a plain surface, front facing up. Good lighting, no shadows, no wrinkles.',
+    icon: Shirt,
+  },
+  {
+    key: 'back',
+    title: 'Back view',
+    instruction: 'Flip the garment over. Same position, same lighting. We need to see the back construction.',
+    icon: RotateCcw,
+  },
+  {
+    key: 'closeup',
+    title: 'Fabric closeup',
+    instruction: 'Hold camera 6-8 inches from the fabric. Capture the weave, texture, and any embellishment detail.',
+    icon: Eye,
+  },
+]
+
 export default function Upload() {
   const nav = useNavigate()
-  const { anchorFile, setAnchorFile, anchorPreview, setAnchorPreview, catalogFiles, setCatalogFiles, catalogPreviews, setCatalogPreviews, mode, setMode } = useApp()
-  const anchorRef = useRef(null)
+  const {
+    anchorFront, setAnchorFront,
+    anchorBack, setAnchorBack,
+    anchorCloseup, setAnchorCloseup,
+    catalogFiles, setCatalogFiles,
+    catalogPreviews, setCatalogPreviews,
+    mode, setMode,
+    setAnchorExtracted, setExtracting, extracting, error, setError,
+    getAnchorPreviews,
+  } = useApp()
+  const fileRef = useRef(null)
   const catalogRef = useRef(null)
 
-  const pickFile = (file, type) => {
+  // Which anchor step we're on (0=front, 1=back, 2=closeup, 3=done)
+  const anchorImages = [anchorFront, anchorBack, anchorCloseup]
+  const currentAnchorStep = anchorImages.findIndex(img => img === null)
+  const anchorStep = currentAnchorStep === -1 ? 3 : currentAnchorStep
+
+  const pickAnchor = (file) => {
     if (!file) return
     const reader = new FileReader()
     reader.onload = e => {
-      if (type === 'anchor') { setAnchorFile(file); setAnchorPreview(e.target.result) }
-      else {
-        setCatalogFiles(prev => [...prev, file])
-        setCatalogPreviews(prev => [...prev, e.target.result])
-      }
+      const data = { file, preview: e.target.result }
+      if (anchorStep === 0) setAnchorFront(data)
+      else if (anchorStep === 1) setAnchorBack(data)
+      else if (anchorStep === 2) setAnchorCloseup(data)
+    }
+    reader.readAsDataURL(file)
+  }
+
+  const removeAnchor = (idx) => {
+    if (idx === 0) { setAnchorFront(null); setAnchorBack(null); setAnchorCloseup(null) }
+    else if (idx === 1) { setAnchorBack(null); setAnchorCloseup(null) }
+    else { setAnchorCloseup(null) }
+  }
+
+  const pickCatalog = (file) => {
+    if (!file) return
+    const reader = new FileReader()
+    reader.onload = e => {
+      setCatalogFiles(prev => [...prev, file])
+      setCatalogPreviews(prev => [...prev, e.target.result])
     }
     reader.readAsDataURL(file)
   }
@@ -30,56 +81,103 @@ export default function Upload() {
     setCatalogPreviews(prev => prev.filter((_, i) => i !== idx))
   }
 
-  const canGo = anchorFile && (mode === 'generate' || catalogFiles.length >= 1)
+  const allAnchorDone = anchorStep === 3
+  const canContinue = allAnchorDone && (mode === 'generate' || catalogFiles.length >= 1)
+
+  const handleContinue = async () => {
+    // Extract attributes from anchor images via backend
+    setExtracting(true)
+    setError(null)
+    try {
+      const files = [anchorFront?.file, anchorBack?.file, anchorCloseup?.file].filter(Boolean)
+      const result = await extractAnchorAttributes(files)
+      setAnchorExtracted(result.attributes)
+      nav('/new-listing/details')
+    } catch (err) {
+      console.error('Anchor extraction failed:', err)
+      setError(`Extraction failed: ${err.message}`)
+    } finally {
+      setExtracting(false)
+    }
+  }
 
   return (
     <div style={{ maxWidth: 700, margin: '0 auto' }}>
       <Stepper steps={FLOW} current={0} />
 
-      {/* Anchor upload */}
+      {/* Step-by-step anchor upload */}
       <div className="card">
-        <div className="card-title">Anchor photo</div>
-        <div className="card-desc">Your real product photo. This is the ground truth that everything is verified against.</div>
+        <div className="card-title">Anchor photos (3 required)</div>
+        <div className="card-desc">
+          Your real product photos are the ground truth. We need front, back, and a fabric closeup.
+        </div>
 
-        {!anchorFile ? (
-          <div
-            className="drop-zone"
-            onClick={() => anchorRef.current?.click()}
-            onDragOver={e => { e.preventDefault(); e.currentTarget.classList.add('over') }}
-            onDragLeave={e => e.currentTarget.classList.remove('over')}
-            onDrop={e => { e.preventDefault(); e.currentTarget.classList.remove('over'); pickFile(e.dataTransfer.files[0], 'anchor') }}
-          >
-            <input ref={anchorRef} type="file" accept="image/*" hidden onChange={e => pickFile(e.target.files[0], 'anchor')} />
-            <Camera size={28} color="var(--text-tertiary)" />
-            <div className="drop-title">Drop your product photo here</div>
-            <div className="drop-hint">or <span className="drop-link">browse files</span> — JPG/PNG, min 800x800px</div>
+        {/* Completed thumbnails */}
+        {anchorStep > 0 && (
+          <div style={{ display: 'flex', gap: 10, marginBottom: 16 }}>
+            {anchorImages.map((img, i) => {
+              if (!img) return null
+              return (
+                <div key={i} style={{ position: 'relative', width: 80 }}>
+                  <img
+                    src={img.preview} alt={ANCHOR_STEPS[i].title}
+                    style={{ width: 80, height: 106, objectFit: 'cover', borderRadius: 6, border: '2px solid var(--success)', display: 'block' }}
+                  />
+                  <div style={{ fontSize: 10, textAlign: 'center', marginTop: 3, color: 'var(--success)', fontWeight: 600 }}>
+                    {ANCHOR_STEPS[i].title}
+                  </div>
+                  <button
+                    onClick={() => removeAnchor(i)}
+                    style={{ position: 'absolute', top: -6, right: -6, width: 18, height: 18, borderRadius: '50%', background: 'var(--danger)', color: 'white', border: 'none', cursor: 'pointer', fontSize: 10, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                  >
+                    <X size={10} />
+                  </button>
+                </div>
+              )
+            })}
           </div>
-        ) : (
-          <div className="drop-zone filled">
-            <div className="file-row">
-              <img src={anchorPreview} alt="Anchor" className="file-thumb" />
-              <div>
-                <div className="file-name">{anchorFile.name}</div>
-                <div className="file-ok">Accepted</div>
-              </div>
-              <button className="file-remove" onClick={() => { setAnchorFile(null); setAnchorPreview(null) }}>
-                <X size={14} /> Remove
-              </button>
+        )}
+
+        {/* Current step upload zone */}
+        {anchorStep < 3 && (
+          <div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+              {(() => { const Icon = ANCHOR_STEPS[anchorStep].icon; return <Icon size={18} color="var(--accent)" /> })()}
+              <span style={{ fontSize: 14, fontWeight: 600 }}>
+                Step {anchorStep + 1} of 3: {ANCHOR_STEPS[anchorStep].title}
+              </span>
             </div>
+            <div
+              className="drop-zone"
+              onClick={() => fileRef.current?.click()}
+              onDragOver={e => { e.preventDefault(); e.currentTarget.classList.add('over') }}
+              onDragLeave={e => e.currentTarget.classList.remove('over')}
+              onDrop={e => { e.preventDefault(); e.currentTarget.classList.remove('over'); pickAnchor(e.dataTransfer.files[0]) }}
+            >
+              <input ref={fileRef} type="file" accept="image/*" hidden onChange={e => { pickAnchor(e.target.files[0]); e.target.value = '' }} />
+              <Camera size={24} color="var(--text-tertiary)" />
+              <div className="drop-title">{ANCHOR_STEPS[anchorStep].instruction}</div>
+              <div className="drop-hint">Drop photo or <span className="drop-link">browse</span> — JPG/PNG</div>
+            </div>
+          </div>
+        )}
+
+        {/* All done */}
+        {allAnchorDone && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '10px 14px', borderRadius: 6, background: 'var(--success-bg)', border: '1px solid var(--success-border)', fontSize: 13, color: 'var(--success)' }}>
+            All 3 anchor photos captured. Ready for attribute extraction.
           </div>
         )}
       </div>
 
-      {/* Mode toggle */}
-      {anchorFile && (
+      {/* Mode toggle — only after all anchor photos */}
+      {allAnchorDone && (
         <>
           <div className="mode-toggle">
             <button className={`mode-btn ${mode === 'upload' ? 'active' : ''}`} onClick={() => setMode('upload')}>
-              <UploadIcon size={14} style={{ marginRight: 4, verticalAlign: -2 }} />
               I have catalog images
             </button>
             <button className={`mode-btn ${mode === 'generate' ? 'active' : ''}`} onClick={() => setMode('generate')}>
-              <Sparkles size={14} style={{ marginRight: 4, verticalAlign: -2 }} />
               Generate with Anchor
             </button>
           </div>
@@ -88,13 +186,11 @@ export default function Upload() {
             <div className="card">
               <div className="card-title">Catalog images</div>
               <div className="card-desc">
-                Upload 4–6 images: front, back, side, closeup, and lifestyle shots.
-                From any source — your photographer, a third-party tool, or AI generated.
+                Upload 4-6 images: front, back, side, closeup, lifestyle. From any source.
               </div>
 
-              {/* Uploaded thumbs */}
               {catalogPreviews.length > 0 && (
-                <div className="catalog-grid" style={{ marginBottom: 16 }}>
+                <div className="catalog-grid" style={{ marginBottom: 14 }}>
                   {catalogPreviews.map((p, i) => (
                     <div className="catalog-thumb" key={i}>
                       <img src={p} alt={`Catalog ${i + 1}`} />
@@ -111,39 +207,43 @@ export default function Upload() {
 
               {catalogPreviews.length < 6 && (
                 <div
-                  className="drop-zone"
-                  style={{ padding: '24px 16px' }}
+                  className="drop-zone" style={{ padding: '20px 16px' }}
                   onClick={() => catalogRef.current?.click()}
                   onDragOver={e => { e.preventDefault(); e.currentTarget.classList.add('over') }}
                   onDragLeave={e => e.currentTarget.classList.remove('over')}
-                  onDrop={e => { e.preventDefault(); e.currentTarget.classList.remove('over'); pickFile(e.dataTransfer.files[0], 'catalog') }}
+                  onDrop={e => { e.preventDefault(); e.currentTarget.classList.remove('over'); pickCatalog(e.dataTransfer.files[0]) }}
                 >
-                  <input ref={catalogRef} type="file" accept="image/*" hidden onChange={e => pickFile(e.target.files[0], 'catalog')} />
-                  <UploadIcon size={20} color="var(--text-tertiary)" />
-                  <div className="drop-title" style={{ fontSize: 13 }}>
-                    Add catalog image ({catalogPreviews.length}/6)
-                  </div>
-                  <div className="drop-hint">3:4 portrait, 1080x1440px minimum, JPEG recommended</div>
+                  <input ref={catalogRef} type="file" accept="image/*" hidden onChange={e => { pickCatalog(e.target.files[0]); e.target.value = '' }} />
+                  <UploadIcon size={18} color="var(--text-tertiary)" />
+                  <div className="drop-title" style={{ fontSize: 13 }}>Add catalog image ({catalogPreviews.length}/6)</div>
+                  <div className="drop-hint">3:4 portrait, 1080x1440px min, JPEG</div>
                 </div>
               )}
-
-              <div style={{ fontSize: 12, color: 'var(--text-tertiary)', marginTop: 8 }}>
-                Required: front, back, side, closeup. Product must fill 85%+ of frame.
-              </div>
             </div>
           ) : (
-            <div className="info-box">
-              We'll generate 5 catalog images (front, back, side, fabric closeup, lifestyle) using your anchor photo as reference,
-              following Myntra's specifications: 3:4 portrait, 1080x1440px, light grey background, model-on shots.
+            <div className="info-box" style={{ marginBottom: 20 }}>
+              We will generate 5 catalog images using your anchor photos as reference, following Myntra specs.
+              You'll review them before verification.
             </div>
           )}
         </>
       )}
 
+      {/* Error display */}
+      {error && (
+        <div style={{ padding: '10px 14px', borderRadius: 6, background: 'var(--danger-bg)', border: '1px solid var(--danger-border)', color: 'var(--danger)', fontSize: 13, marginBottom: 16 }}>
+          {error}
+        </div>
+      )}
+
       <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 20 }}>
         <button className="btn btn-ghost" onClick={() => nav('/')}>Back</button>
-        <button className="btn btn-primary" disabled={!canGo} onClick={() => nav('/new-listing/details')}>
-          Continue to details
+        <button className="btn btn-primary" disabled={!canContinue || extracting} onClick={handleContinue}>
+          {extracting ? (
+            <><span className="spinner" style={{ marginRight: 6 }} /> Extracting attributes...</>
+          ) : (
+            <>Continue to details <ArrowRight size={14} /></>
+          )}
         </button>
       </div>
     </div>

@@ -2,8 +2,11 @@ import { useNavigate } from 'react-router-dom'
 import { CheckCircle, ArrowRight, Clock, Hash, Shield, BarChart3 } from 'lucide-react'
 import ExcelView from '../components/ExcelView'
 
+import { useApp } from '../AppContext'
+
 export default function Success() {
   const nav = useNavigate()
+  const { csvSessionId, verdict } = useApp()
 
   return (
     <div style={{ maxWidth: 640, margin: '0 auto' }}>
@@ -44,7 +47,9 @@ export default function Success() {
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 4 }}>
               <BarChart3 size={12} /> Confidence
             </div>
-            <div style={{ fontSize: 20, fontWeight: 700, color: 'var(--success)' }}>94%</div>
+            <div style={{ fontSize: 20, fontWeight: 700, color: 'var(--success)' }}>
+              {verdict?.overall_similarity || 94}%
+            </div>
           </div>
           <div style={{ padding: '12px 16px', background: 'var(--bg-page)', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 4 }}>
