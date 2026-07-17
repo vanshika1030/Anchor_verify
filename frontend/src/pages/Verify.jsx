@@ -176,15 +176,24 @@ export default function Verify() {
 
       {/* ═══ GENERATED METADATA (generate mode only) ═══ */}
       {generatedMetadata && (
-        <div className="card" style={{ borderLeft: '3px solid var(--accent)' }}>
+        <div className="card" style={{ borderLeft: '3px solid var(--accent)', marginTop: 20 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14 }}>
             <Sparkles size={18} color="var(--accent)" />
             <div className="card-title" style={{ fontSize: 15, marginBottom: 0, color: 'var(--accent)' }}>
-              Generated Listing
+              Generated AI Catalog
             </div>
           </div>
 
-          {/* Title */}
+          {generatedMetadata.generated_image_url && (
+            <div style={{ marginBottom: 20, textAlign: 'center', background: '#f5f5f5', borderRadius: 8, padding: 8 }}>
+              <img 
+                src={generatedMetadata.generated_image_url} 
+                alt="Generated AI Model" 
+                style={{ width: '100%', maxWidth: '300px', height: 'auto', borderRadius: 6 }} 
+              />
+            </div>
+          )}
+
           <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 8, lineHeight: 1.4 }}>
             {generatedMetadata.title}
           </div>

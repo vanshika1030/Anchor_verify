@@ -66,14 +66,19 @@ router.post('/', async (req, res) => {
     // ── Step 4: Deterministic verdict ───────────────────────────────
     const verdict = generateVerdict(comparison, modelIssues)
 
-    // ── Step 5: Generate listing metadata (generate mode only) ──────
+    // ── Step 5: Generate listing metadata + image (generate mode only)
     if (isGenerateMode) {
       console.log(`[VERIFY] Generate mode — creating listing metadata...`)
       try {
         generatedMetadata = await generateListingMetadata(anchorPaths, parsedDeclared)
         console.log(`[VERIFY] Metadata generated: "${generatedMetadata?.title?.substring(0, 50)}..."`)
+        
+        // Actually generate a visual image!
+        const imageUrl = await generateCatalogImage(parsedDeclared)
+        generatedMetadata.generated_image_url = imageUrl
+        console.log(`[VERIFY] Catalog image generated: ${imageUrl}`)
       } catch (metaErr) {
-        console.warn('[VERIFY] Metadata generation failed (non-critical):', metaErr.message)
+        console.warn('[VERIFY] Generation failed (non-critical):', metaErr.message)
         generatedMetadata = null
       }
     }

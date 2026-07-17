@@ -4,7 +4,7 @@ import path from 'path'
 import sharp from 'sharp'
 
 let openai = null
-const MODEL = 'meta-llama/llama-4-scout-17b-16e-instruct'
+const MODEL = 'qwen/qwen3.6-27b'
 
 export function initOpenAI(apiKey) {
   openai = new OpenAI({
@@ -29,10 +29,12 @@ function parseJSON(text) {
 // ─── Resize + encode image (token-efficient) ─────────────────────────
 
 async function fileToImage(filePath) {
-  const resized = await sharp(filePath)
-    .resize(512, 512, { fit: 'inside', withoutEnlargement: true })
-    .jpeg({ quality: 55 })
-    .toBuffer()
+    // Extreme compression for Groq TPM limits (8000 limit)
+    const buffer = await fs.promises.readFile(filePath)
+    const resized = await sharp(buffer)
+      .resize(384, 384, { fit: 'inside', withoutEnlargement: true })
+      .jpeg({ quality: 45 })
+      .toBuffer()
   return {
     type: 'image_url',
     image_url: { url: `data:image/jpeg;base64,${resized.toString('base64')}` }
@@ -72,6 +74,11 @@ Analyze the provided image(s) and extract these attributes. For each:
 - "value": be specific (e.g. "Elbow length" not "Medium", "Below knee" not "Long")
 - "confidence": "HIGH" (clearly visible), "MEDIUM" (inferred), "LOW" (uncertain)
 
+CRITICAL RULES:
+1. FLAT LAYS (Anchor images without a body): Infer length by looking at the proportions of the garment (e.g., a wide, short boxy top is "Short" or "Waist length", not "Below knee").
+2. EMBELLISHMENTS: Do NOT confuse printed patterns (like floral prints) with physical embellishments (like sequins or beads). If it is just printed fabric, embellishment is "none".
+3. TRANSPARENCY: Standard cotton/woven fabric is "Opaque".
+
 If you cannot determine an attribute, set value to "Not determinable".
 
 Return ONLY valid JSON:
@@ -100,8 +107,8 @@ const CATALOG_PROMPT = `You are a garment attribute detection system for Myntra.
 Analyze the catalog/listing image(s). These are professional model shots showing the garment on a person.
 
 Extract attributes + estimate the model's body:
-- model_apparent_height: "petite (under 5'4)" / "average (5'4-5'7)" / "tall (5'8+)" / "No model visible"
-- model_apparent_build: "slim (XS-S)" / "average (S-M)" / "athletic (M-L)" / "plus-size (L-XXL)" / "No model visible"
+- model_apparent_height: ONLY CHOOSE ONE: "petite", "average", "tall", or "No model visible"
+- model_apparent_build: ONLY CHOOSE ONE: "slim", "average", "athletic", "plus-size", or "No model visible"
 
 PAY SPECIAL ATTENTION to overall_length — where does the garment end on the model's body? Be very specific:
 - "Above waist" / "Waist length" / "Hip length" / "Above knee" / "Knee length" / "Below knee" / "Calf length" / "Ankle length" / "Floor length"
@@ -129,9 +136,9 @@ Return ONLY valid JSON:
   "model_apparent_build": {"value": "", "confidence": ""}
 }`
 
-/** Extract from anchor images (max 3 images → under 5-image limit) */
+/** Extract from anchor images (max 1 image to save tokens) */
 export async function extractAnchorAttributes(imagePaths) {
-  const paths = imagePaths.slice(0, 3)
+  const paths = imagePaths.slice(0, 1)
   const content = [{ type: 'text', text: EXTRACT_PROMPT }]
   const images = await Promise.all(paths.map(p => fileToImage(p)))
   content.push(...images)
@@ -140,9 +147,9 @@ export async function extractAnchorAttributes(imagePaths) {
   return parseJSON(text)
 }
 
-/** Extract from catalog images (max 2 images → under 5-image limit) */
+/** Extract from catalog images (max 1 image to save tokens) */
 export async function extractCatalogAttributes(imagePaths) {
-  const paths = imagePaths.slice(0, 2)
+  const paths = imagePaths.slice(0, 1)
   const content = [{ type: 'text', text: CATALOG_PROMPT }]
   const images = await Promise.all(paths.map(p => fileToImage(p)))
   content.push(...images)
@@ -221,10 +228,14 @@ const SYNONYMS = {
     ethnic:   ['ethnic print', 'block print', 'bandhani', 'ikat', 'ajrakh', 'kalamkari'],
   },
   length: {
-    short:   ['short kurti', 'hip length', 'above waist', 'crop', 'cropped', 'waist length', 'above hip'],
-    regular: ['regular length', 'above knee', 'mid-thigh', 'knee length'],
-    long:    ['long kurti', 'below knee', 'calf length', 'midi', 'ankle length', 'maxi', 'floor length', 'full length'],
+    short:   ['short kurti', 'hip length', 'above waist', 'crop', 'cropped', 'waist length', 'above hip', 'short'],
+    regular: ['regular length', 'above knee', 'mid-thigh', 'knee length', 'regular'],
+    long:    ['long kurti', 'below knee', 'calf length', 'midi', 'ankle length', 'maxi', 'floor length', 'full length', 'long'],
   },
+  transparency: {
+    opaque: ['opaque', 'not transparent', 'non-transparent', 'solid'],
+    sheer:  ['sheer', 'transparent', 'see-through', 'semi-sheer'],
+  }
 }
 
 function getAttrValue(attrs, key) {
@@ -251,7 +262,7 @@ function getSynonymCategory(key) {
     fit: 'fit', silhouette: 'fit',
     occasion_style: 'occasion',
     pattern_type: 'pattern', motif_description: 'pattern',
-    overall_length: 'length',
+    overall_length: 'length', transparency: 'transparency',
   }
   return map[key] || null
 }
@@ -498,3 +509,27 @@ Return ONLY valid JSON:
   const text = await callLLM([{ role: 'user', content }], 2000)
   return parseJSON(text)
 }
+
+// ═════════════════════════════════════════════════════════════════════
+//  6. GENERATE CATALOG IMAGE (Real-time AI Image Gen via Pollinations)
+// ═════════════════════════════════════════════════════════════════════
+
+export async function generateCatalogImage(confirmedAttrs) {
+  const attrs = JSON.stringify(confirmedAttrs || {})
+  const prompt = `Write a highly detailed text-to-image prompt to generate a professional Myntra e-commerce catalog photo.
+The photo must feature a human fashion model wearing the exact garment described by these attributes: ${attrs}
+Focus purely on visual description: the exact cut, color, pattern, length, and fabric of the garment.
+Specify: Studio lighting, light grey background, ultra-realistic fashion photography, 8k resolution, full body shot.
+Return ONLY the raw prompt text (1 paragraph, no intro/outro).`
+
+  console.log('  → Generating image generation prompt...')
+  const imagePrompt = await callLLM([{ role: 'user', content: [{ type: 'text', text: prompt }] }], 800)
+  
+  // URL-encode the prompt for Pollinations.ai (free, no-key, real-time SDXL inference)
+  const encoded = encodeURIComponent(imagePrompt.trim())
+  const seed = Math.floor(Math.random() * 1000000)
+  const imageUrl = `https://image.pollinations.ai/prompt/${encoded}?width=768&height=1024&nologo=true&seed=${seed}`
+  
+  return imageUrl
+}
+
