@@ -36,36 +36,26 @@ export async function extractAnchorAttributes(files) {
   return post('/extract/anchor', form, true)
 }
 
-/** Send catalog image files to backend for extraction */
-export async function extractCatalogAttributes(files) {
+// ─── Verify (NEW — single-prompt architecture) ──────────────────────
+
+/** Run full verification pipeline — sends ALL images to one LLM call */
+export async function runVerification({ anchorFiles, catalogFiles, declaredAttrs, anchorExtracted, mode }) {
   const form = new FormData()
-  for (const f of files) {
-    if (f instanceof File || f instanceof Blob) {
-      form.append('images', f)
-    }
-  }
-  return post('/extract/catalog', form, true)
-}
 
-// ─── Verify ──────────────────────────────────────────────────────────
-
-/** Run full verification pipeline */
-export async function runVerification({ anchorAttrs, catalogAttrs, declaredAttrs, modelHeight, modelSize, anchorCloseupFile, catalogImageFiles }) {
-  const form = new FormData()
-  form.append('anchorAttrs', JSON.stringify(anchorAttrs))
-  form.append('catalogAttrs', JSON.stringify(catalogAttrs))
-  form.append('declaredAttrs', JSON.stringify(declaredAttrs))
-  form.append('modelHeight', modelHeight || '')
-  form.append('modelSize', modelSize || '')
-
-  if (anchorCloseupFile instanceof File) {
-    form.append('anchorCloseup', anchorCloseupFile)
+  // Anchor images
+  for (const f of (anchorFiles || [])) {
+    if (f instanceof File) form.append('anchorImages', f)
   }
-  if (catalogImageFiles) {
-    for (const f of catalogImageFiles) {
-      if (f instanceof File) form.append('catalogImages', f)
-    }
+
+  // Catalog images (empty in generate mode)
+  for (const f of (catalogFiles || [])) {
+    if (f instanceof File) form.append('catalogImages', f)
   }
+
+  // Metadata
+  form.append('declaredAttrs', JSON.stringify(declaredAttrs || {}))
+  form.append('anchorExtracted', JSON.stringify(anchorExtracted || {}))
+  form.append('mode', mode || 'upload')
 
   return post('/verify', form, true)
 }

@@ -8,6 +8,27 @@ const BASE_DELAY_MS = 2000
 
 let genAI = null
 
+// --- SDK BUG FIX ---
+// The @google/generative-ai SDK (v0.24.1) has a hardcoded check that assumes any API key 
+// not starting with "AIza" is an OAuth token. Google recently started issuing keys starting 
+// with "AQ", causing the SDK to send them incorrectly as Bearer tokens, resulting in 401 Unauthorized.
+// This interceptor patches the outgoing fetch request to bypass the SDK bug.
+const originalFetch = global.fetch
+global.fetch = async (url, options) => {
+  if (url.toString().includes('generativelanguage.googleapis.com')) {
+    const apiKey = process.env.GEMINI_API_KEY
+    if (apiKey && !url.toString().includes('key=')) {
+      if (options?.headers) {
+        delete options.headers['Authorization']
+        delete options.headers.Authorization
+      }
+      const sep = url.toString().includes('?') ? '&' : '?'
+      url = `${url}${sep}key=${apiKey}`
+    }
+  }
+  return originalFetch(url, options)
+}
+
 export function initGemini(apiKey) {
   genAI = new GoogleGenerativeAI(apiKey)
 }
@@ -222,29 +243,52 @@ Return ONLY valid JSON:
 }
 
 export function checkModelProportions(catalogAttrs, declaredHeight, declaredSize) {
-  const issues = []
-  const h = catalogAttrs?.model_apparent_height
-  const b = catalogAttrs?.model_apparent_build
-  if (!h || !b || h.value === 'No model visible') return issues
+  const issues = [];
+  const h = catalogAttrs?.model_apparent_height;
+  const b = catalogAttrs?.model_apparent_build;
+  if (!h || !b || h.value === 'No model visible') return issues;
 
-  const hv = h.value.toLowerCase()
-  const dh = (declaredHeight || '').toLowerCase()
-  if ((dh.includes("5'0") || dh.includes("5'1") || dh.includes("5'2") || dh.includes("5'3")) && !hv.includes('petite')) {
-    issues.push({ attr: 'Model height', declared: declaredHeight, detected: h.value, confidence: h.confidence, severity: 'HIGH', note: `Declared ${declaredHeight} (petite) but model appears ${h.value}` })
-  }
-  if ((dh.includes("5'8") || dh.includes("5'9") || dh.includes("5'10") || dh.includes("5'11") || dh.includes("6'")) && !hv.includes('tall')) {
-    issues.push({ attr: 'Model height', declared: declaredHeight, detected: h.value, confidence: h.confidence, severity: 'HIGH', note: `Declared ${declaredHeight} (tall) but model appears ${h.value}` })
+  const hv = h.value.toLowerCase();
+  const dh = (declaredHeight || '').toLowerCase();
+  
+  // Robust height parsing (handles 5'8", 5 ft 8, 173 cm)
+  let totalInches = null;
+  const cmMatch = dh.match(/(\d+(?:\.\d+)?)\s*cm/);
+  if (cmMatch) {
+    totalInches = parseFloat(cmMatch[1]) / 2.54;
+  } else {
+    const ftMatch = dh.match(/(\d+)\s*(?:'|ft|foot|feet)\s*(?:(\d+)\s*(?:"|in|inches)?)?/);
+    if (ftMatch) {
+      const feet = parseInt(ftMatch[1]);
+      const inches = parseInt(ftMatch[2] || '0');
+      totalInches = feet * 12 + inches;
+    }
   }
 
-  const bv = b.value.toLowerCase()
-  const ds = (declaredSize || '').toUpperCase()
+  // Height checks (Petite < 64", Average 64"-67", Tall > 67")
+  if (totalInches !== null) {
+    if (totalInches < 64 && !hv.includes('petite')) {
+      issues.push({ attr: 'Model height', declared: declaredHeight, detected: h.value, confidence: h.confidence, severity: 'HIGH', note: `Declared ${declaredHeight} (petite) but model appears ${h.value}` });
+    } else if (totalInches >= 64 && totalInches <= 67 && (hv.includes('petite') || hv.includes('tall'))) {
+      issues.push({ attr: 'Model height', declared: declaredHeight, detected: h.value, confidence: h.confidence, severity: 'MEDIUM', note: `Declared ${declaredHeight} (average) but model appears ${h.value}` });
+    } else if (totalInches > 67 && !hv.includes('tall')) {
+      issues.push({ attr: 'Model height', declared: declaredHeight, detected: h.value, confidence: h.confidence, severity: 'HIGH', note: `Declared ${declaredHeight} (tall) but model appears ${h.value}` });
+    }
+  }
+
+  // Size checks
+  const bv = b.value.toLowerCase();
+  const ds = (declaredSize || '').toUpperCase().replace(/[^A-Z]/g, ''); // strip spaces, keep only letters
+  
   if ((ds === 'XS' || ds === 'S') && (bv.includes('plus') || bv.includes('l-xxl'))) {
-    issues.push({ attr: 'Model size', declared: declaredSize, detected: b.value, confidence: b.confidence, severity: 'HIGH', note: `Declared size ${declaredSize} but model appears ${b.value}` })
+    issues.push({ attr: 'Model size', declared: declaredSize, detected: b.value, confidence: b.confidence, severity: 'HIGH', note: `Declared size ${declaredSize} but model appears ${b.value}` });
+  } else if ((ds === 'M' || ds === 'L') && (bv.includes('slim') || bv.includes('xs-s') || bv.includes('plus'))) {
+    issues.push({ attr: 'Model size', declared: declaredSize, detected: b.value, confidence: b.confidence, severity: 'MEDIUM', note: `Declared size ${declaredSize} but model appears ${b.value}` });
+  } else if ((ds === 'XL' || ds === 'XXL' || ds.includes('X')) && (bv.includes('slim') || bv.includes('xs-s') || bv.includes('average'))) {
+    issues.push({ attr: 'Model size', declared: declaredSize, detected: b.value, confidence: b.confidence, severity: 'HIGH', note: `Declared size ${declaredSize} but model appears ${b.value}` });
   }
-  if ((ds === 'XL' || ds === 'XXL') && (bv.includes('slim') || bv.includes('xs-s'))) {
-    issues.push({ attr: 'Model size', declared: declaredSize, detected: b.value, confidence: b.confidence, severity: 'HIGH', note: `Declared size ${declaredSize} but model appears ${b.value}` })
-  }
-  return issues
+  
+  return issues;
 }
 
 export function generateVerdict(rows, modelIssues) {

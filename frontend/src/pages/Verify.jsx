@@ -2,8 +2,8 @@ import React, { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useApp } from '../AppContext'
 import Stepper from '../components/Stepper'
-import { extractCatalogAttributes, runVerification as runVerifyAPI, updateCSVRow } from '../services/api'
-import { CheckCircle, XCircle, AlertTriangle, ArrowRight, Eye, Loader } from 'lucide-react'
+import { runVerification, updateCSVRow } from '../services/api'
+import { CheckCircle, XCircle, AlertTriangle, ArrowRight, Eye, Loader, Sparkles, Package, Tag } from 'lucide-react'
 
 const FLOW = ['Upload', 'Details', 'Verify', 'Publish']
 const CONFIDENCE_DOT = { HIGH: 'var(--success)', MEDIUM: 'var(--warning)', LOW: 'var(--danger)' }
@@ -21,9 +21,9 @@ const ATTR_LABELS = {
 export default function Verify() {
   const nav = useNavigate()
   const {
-    anchorFront, anchorCloseup,
+    anchorFront, anchorBack, anchorCloseup,
     catalogFiles, catalogPreviews, mode, confirmedAttrs,
-    anchorExtracted, catalogExtracted, setCatalogExtracted,
+    anchorExtracted, setCatalogExtracted,
     comparisonResult, setComparisonResult,
     fabricResult, setFabricResult,
     verdict, setVerdict,
@@ -36,6 +36,7 @@ export default function Verify() {
   const [error, setError] = useState(null)
   const [selectedCat, setSelectedCat] = useState(0)
   const [expandedRow, setExpandedRow] = useState(null)
+  const [generatedMetadata, setGeneratedMetadata] = useState(null)
 
   useEffect(() => {
     if (comparisonResult && verdict) {
@@ -49,35 +50,33 @@ export default function Verify() {
     setLoading(true)
     setError(null)
     try {
-      // Step 1: Extract catalog attributes via backend
-      setProgress('Analyzing catalog images...')
-      if (catalogFiles.length === 0 && mode !== 'generate') {
-        throw new Error('No catalog images to verify')
+      // Collect ALL anchor files
+      const anchorFiles = [anchorFront?.file, anchorBack?.file, anchorCloseup?.file].filter(Boolean)
+
+      if (anchorFiles.length === 0) {
+        throw new Error('No anchor images found — go back and upload your product photos')
       }
 
-      let catAttrs = catalogExtracted
-      if (!catAttrs && catalogFiles.length > 0) {
-        const catResult = await extractCatalogAttributes(catalogFiles)
-        catAttrs = catResult.attributes
-        setCatalogExtracted(catAttrs)
-      }
+      setProgress(mode === 'generate'
+        ? 'Generating listing metadata & running self-check...'
+        : 'Running AI visual verification — comparing all images...'
+      )
 
-      // Step 2: Run full verification pipeline on backend
-      setProgress('Running verification pipeline...')
-      const result = await runVerifyAPI({
-        anchorAttrs: anchorExtracted,
-        catalogAttrs: catAttrs || {},
+      // ONE API call — sends all images to the single-prompt pipeline
+      const result = await runVerification({
+        anchorFiles,
+        catalogFiles: catalogFiles || [],
         declaredAttrs: confirmedAttrs || {},
-        modelHeight: confirmedAttrs?.model_height,
-        modelSize: confirmedAttrs?.model_size,
-        anchorCloseupFile: anchorCloseup?.file,
-        catalogImageFiles: catalogFiles,
+        anchorExtracted: anchorExtracted || {},
+        mode: mode,
       })
 
-      setComparisonResult(result.comparison)
+      setComparisonResult(result.comparison || [])
+      setCatalogExtracted(result.catalog_attributes || null)
       setModelIssues(result.modelIssues || [])
-      setFabricResult(result.fabricResult)
-      setVerdict(result.verdict)
+      setFabricResult(result.fabricResult || null)
+      setVerdict(result.verdict || { status: 'PASS', reason: 'Completed', critical_issues: [] })
+      if (result.generatedMetadata) setGeneratedMetadata(result.generatedMetadata)
 
     } catch (err) {
       console.error('Verification failed:', err)
@@ -88,11 +87,11 @@ export default function Verify() {
   }
 
   const handlePublish = async () => {
+    const v = verdict
     if (csvSessionId && csvRowIndex !== null && v) {
       const updates = {
         anchorVerificationStatus: v.status,
-        anchorSimilarityScore: v.overall_similarity !== undefined ? `${v.overall_similarity}%` : '',
-        anchorMismatchCount: v.structural_mismatches?.length || 0,
+        anchorMismatchCount: (comparisonResult || []).filter(r => r.status === 'mismatch').length,
         anchorVerificationNotes: v.reason || '',
       }
       try {
@@ -111,12 +110,14 @@ export default function Verify() {
         <Stepper steps={FLOW} current={2} />
         <div className="card" style={{ padding: '48px 32px' }}>
           <Loader size={32} color="var(--accent)" className="spin" style={{ marginBottom: 16 }} />
-          <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 8 }}>Verifying your listing</div>
+          <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 8 }}>
+            {mode === 'generate' ? 'Generating your listing' : 'Verifying your listing'}
+          </div>
           <div style={{ color: 'var(--text-secondary)', fontSize: 13, marginBottom: 20, lineHeight: 1.6 }}>
             {progress}
           </div>
           <div style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>
-            This takes 10-15 seconds — Gemini is analyzing your images
+            This takes 10-20 seconds — AI is analyzing all your images in one pass
           </div>
         </div>
       </div>
@@ -134,7 +135,7 @@ export default function Verify() {
           <div style={{ color: 'var(--text-secondary)', fontSize: 13, marginBottom: 16, lineHeight: 1.6 }}>{error}</div>
           <div style={{ display: 'flex', gap: 10, justifyContent: 'center' }}>
             <button className="btn btn-outline" onClick={() => nav('/new-listing/upload')}>Go back</button>
-            <button className="btn btn-primary" onClick={runVerification}>Retry verification</button>
+            <button className="btn btn-primary" onClick={doVerification}>Retry verification</button>
           </div>
         </div>
       </div>
@@ -143,10 +144,10 @@ export default function Verify() {
 
   // ── Results ──
   const rows = comparisonResult || []
-  const failCount = rows.filter(r => r.status === 'mismatch' && r.severity === 'HIGH').length + modelIssues.length
+  const failCount = rows.filter(r => r.status === 'mismatch' && r.severity === 'HIGH').length + (modelIssues?.length || 0)
   const warnCount = rows.filter(r => r.status === 'mismatch' && r.severity !== 'HIGH').length + rows.filter(r => r.status === 'warning').length
   const passCount = rows.filter(r => r.status === 'match').length
-  const v = verdict || { status: 'PASS', reason: 'Completed', counts: { fail: 0, warn: 0, pass: 0 } }
+  const v = verdict || { status: 'PASS', reason: 'Completed', critical_issues: [] }
 
   return (
     <div style={{ maxWidth: 960, margin: '0 auto' }}>
@@ -162,6 +163,7 @@ export default function Verify() {
           <div className="verdict-sub">
             {v.status === 'FAIL' ? 'Fix the issues below before publishing' :
              v.status === 'WARNING' ? 'Review warnings below. You can still publish.' :
+             mode === 'generate' ? 'Your listing metadata is ready to publish.' :
              'Your listing is ready to publish.'}
           </div>
         </div>
@@ -172,7 +174,76 @@ export default function Verify() {
         </div>
       </div>
 
-      {/* Catalog image strip */}
+      {/* ═══ GENERATED METADATA (generate mode only) ═══ */}
+      {generatedMetadata && (
+        <div className="card" style={{ borderLeft: '3px solid var(--accent)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14 }}>
+            <Sparkles size={18} color="var(--accent)" />
+            <div className="card-title" style={{ fontSize: 15, marginBottom: 0, color: 'var(--accent)' }}>
+              Generated Listing
+            </div>
+          </div>
+
+          {/* Title */}
+          <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 8, lineHeight: 1.4 }}>
+            {generatedMetadata.title}
+          </div>
+
+          {/* Description */}
+          <div style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 14, lineHeight: 1.6 }}>
+            {generatedMetadata.description}
+          </div>
+
+          {/* Key features */}
+          {generatedMetadata.key_features?.length > 0 && (
+            <div style={{ marginBottom: 14 }}>
+              <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6, display: 'flex', alignItems: 'center', gap: 4 }}>
+                <Package size={12} /> Key Features
+              </div>
+              <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.8 }}>
+                {generatedMetadata.key_features.map((f, i) => <li key={i}>{f}</li>)}
+              </ul>
+            </div>
+          )}
+
+          {/* Tags */}
+          {generatedMetadata.tags?.length > 0 && (
+            <div style={{ marginBottom: 14 }}>
+              <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6, display: 'flex', alignItems: 'center', gap: 4 }}>
+                <Tag size={12} /> Tags
+              </div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                {generatedMetadata.tags.map((t, i) => (
+                  <span key={i} style={{ background: 'var(--bg-highlight)', border: '1px solid var(--border)', borderRadius: 4, padding: '3px 8px', fontSize: 11, color: 'var(--text-secondary)' }}>
+                    {t}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Metadata grid */}
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, fontSize: 12 }}>
+            {generatedMetadata.category_path && (
+              <div><strong>Category:</strong> {generatedMetadata.category_path}</div>
+            )}
+            {generatedMetadata.ideal_for && (
+              <div><strong>Ideal for:</strong> {generatedMetadata.ideal_for}</div>
+            )}
+            {generatedMetadata.fabric_details && (
+              <div><strong>Fabric:</strong> {generatedMetadata.fabric_details}</div>
+            )}
+            {generatedMetadata.care_instructions && (
+              <div><strong>Care:</strong> {generatedMetadata.care_instructions}</div>
+            )}
+            {generatedMetadata.size_fit_note && (
+              <div style={{ gridColumn: '1 / -1' }}><strong>Size & Fit:</strong> {generatedMetadata.size_fit_note}</div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Catalog image strip (verify mode only) */}
       {catalogPreviews.length > 0 && (
         <div className="card">
           <div className="card-title">Catalog images under verification</div>
@@ -199,17 +270,27 @@ export default function Verify() {
         </div>
 
         <div className="card" style={{ marginBottom: 0 }}>
-          <div className="img-card-label">Catalog image</div>
-          {catalogPreviews[selectedCat] ? (
-            <img src={catalogPreviews[selectedCat]} alt="Catalog" style={{ aspectRatio: '3/4', objectFit: 'cover', maxHeight: 360 }} />
+          <div className="img-card-label">
+            {mode === 'generate' ? 'Anchor (back view)' : 'Catalog image'}
+          </div>
+          {mode === 'generate' ? (
+            anchorBack?.preview ? (
+              <img src={anchorBack.preview} alt="Anchor Back" style={{ aspectRatio: '3/4', objectFit: 'cover', maxHeight: 360 }} />
+            ) : (
+              <div className="img-placeholder">No back view</div>
+            )
           ) : (
-            <div className="img-placeholder">No catalog image</div>
+            catalogPreviews[selectedCat] ? (
+              <img src={catalogPreviews[selectedCat]} alt="Catalog" style={{ aspectRatio: '3/4', objectFit: 'cover', maxHeight: 360 }} />
+            ) : (
+              <div className="img-placeholder">No catalog image</div>
+            )
           )}
         </div>
       </div>
 
       {/* Model proportion issues */}
-      {modelIssues.length > 0 && (
+      {modelIssues?.length > 0 && (
         <div className="card" style={{ borderLeft: '3px solid var(--danger)' }}>
           <div className="card-title" style={{ fontSize: 14, color: 'var(--danger)' }}>
             Model proportion mismatches
@@ -226,7 +307,23 @@ export default function Verify() {
         </div>
       )}
 
-      {/* Attribute comparison table — REAL DATA */}
+      {/* Math scores from hybrid pipeline */}
+      {v.math_proportions && (
+        <div className="card" style={{ borderLeft: '3px solid var(--accent)' }}>
+          <div className="card-title" style={{ fontSize: 14, color: 'var(--accent)' }}>
+            Mathematical Proportion Check (MediaPipe)
+          </div>
+          <div style={{ fontSize: 13 }}>
+            Detected Hemline: <strong style={{ textTransform: 'capitalize' }}>{v.math_proportions.mathematical_length_category?.replace('_', ' ')}</strong>
+            <br />
+            <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+              Shoulder: {v.math_proportions.landmarks?.shoulder_y} | Hip: {v.math_proportions.landmarks?.hip_y} | Knee: {v.math_proportions.landmarks?.knee_y} | Hemline: {v.math_proportions.detected_hemline_y}
+            </span>
+          </div>
+        </div>
+      )}
+
+      {/* Attribute comparison table */}
       <div className="card">
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
           <div className="card-title" style={{ fontSize: 14, marginBottom: 0 }}>
@@ -239,7 +336,7 @@ export default function Verify() {
             <tr>
               <th>Attribute</th>
               <th>Anchor (detected)</th>
-              <th>Catalog (detected)</th>
+              <th>{mode === 'generate' ? 'Self-check' : 'Catalog (detected)'}</th>
               <th>Seller (declared)</th>
               <th style={{ width: 130 }}>Status</th>
             </tr>
@@ -255,13 +352,13 @@ export default function Verify() {
                   <td style={{ fontWeight: 500 }}>{ATTR_LABELS[r.key] || r.key}</td>
                   <td>
                     {r.anchor_value || '—'}
-                    {r.anchor_confidence && (
+                    {r.anchor_confidence && r.anchor_confidence !== 'N/A' && (
                       <span style={{ display: 'inline-block', width: 6, height: 6, borderRadius: '50%', background: CONFIDENCE_DOT[r.anchor_confidence], marginLeft: 4, verticalAlign: 1 }} />
                     )}
                   </td>
                   <td>
                     {r.catalog_value || '—'}
-                    {r.catalog_confidence && (
+                    {r.catalog_confidence && r.catalog_confidence !== 'N/A' && (
                       <span style={{ display: 'inline-block', width: 6, height: 6, borderRadius: '50%', background: CONFIDENCE_DOT[r.catalog_confidence], marginLeft: 4, verticalAlign: 1 }} />
                     )}
                   </td>
@@ -294,29 +391,24 @@ export default function Verify() {
       {/* Fabric verification */}
       {fabricResult && (
         <div className="card">
-          <div className="card-title" style={{ fontSize: 14 }}>Fabric verification</div>
+          <div className="card-title" style={{ fontSize: 14 }}>Fabric verification (CLIP)</div>
+
+          {v.math_fabric_score !== undefined && (
+            <div style={{ fontSize: 12, marginBottom: 8, padding: '4px 8px', background: 'var(--bg-highlight)', borderRadius: 4, display: 'inline-block', border: '1px solid var(--border)' }}>
+              <strong>CLIP Similarity Score:</strong> {(v.math_fabric_score * 100).toFixed(1)}%
+            </div>
+          )}
+
           {fabricResult.fabric_matches_anchor === true || fabricResult.fabric_matches_anchor === undefined ? (
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: 'var(--success)' }}>
               <CheckCircle size={14} />
               {fabricResult.issue ? fabricResult.issue : 'Fabric appearance is consistent between anchor and catalog'}
             </div>
           ) : (
-            <>
-              <div style={{ color: 'var(--danger)', fontSize: 13, marginBottom: 8, lineHeight: 1.6 }}>
-                <XCircle size={14} style={{ verticalAlign: -2, marginRight: 4 }} />
-                {fabricResult.issue || 'Fabric appearance differs between anchor and catalog'}
-              </div>
-              {fabricResult.anchor_fabric_appearance && (
-                <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 4 }}>
-                  <strong>Anchor:</strong> {fabricResult.anchor_fabric_appearance}
-                </div>
-              )}
-              {fabricResult.catalog_fabric_appearance && (
-                <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 8 }}>
-                  <strong>Catalog:</strong> {fabricResult.catalog_fabric_appearance}
-                </div>
-              )}
-            </>
+            <div style={{ color: 'var(--danger)', fontSize: 13, lineHeight: 1.6 }}>
+              <XCircle size={14} style={{ verticalAlign: -2, marginRight: 4 }} />
+              {fabricResult.issue || 'Fabric appearance differs between anchor and catalog'}
+            </div>
           )}
         </div>
       )}

@@ -4,7 +4,7 @@ import cors from 'cors'
 import multer from 'multer'
 import path from 'path'
 import { fileURLToPath } from 'url'
-import { initGemini } from './services/gemini.js'
+import { initOpenAI } from './services/openai.js'
 import extractRoutes from './routes/extract.js'
 import verifyRoutes from './routes/verify.js'
 import csvRoutes from './routes/csv.js'
@@ -13,13 +13,13 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const app = express()
 const PORT = process.env.PORT || 3001
 
-// ─── Init Gemini ─────────────────────────────────────────────────────
-if (!process.env.GEMINI_API_KEY) {
-  console.error('GEMINI_API_KEY not set in .env')
+// ─── Init LLM (Groq + Llama 4 Scout) ────────────────────────────────
+if (!process.env.GROQ_API_KEY) {
+  console.error('GROQ_API_KEY not set in .env')
   process.exit(1)
 }
-initGemini(process.env.GEMINI_API_KEY)
-console.log('Gemini initialized with model fallback chain: gemini-2.0-flash > gemini-1.5-flash > gemini-2.0-flash-lite')
+initOpenAI(process.env.GROQ_API_KEY)
+console.log('Groq initialized with Llama 4 Scout 17B (vision)')
 
 // ─── Middleware ──────────────────────────────────────────────────────
 app.use(cors({ origin: 'http://localhost:5173', credentials: true }))
@@ -47,7 +47,7 @@ const upload = multer({
 
 // Health check
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', models: ['gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-2.0-flash-lite'] })
+  res.json({ status: 'ok', engine: 'groq', model: 'meta-llama/llama-4-scout-17b-16e-instruct' })
 })
 
 // Extract routes — accepts multiple images
@@ -70,8 +70,7 @@ app.listen(PORT, () => {
   console.log(`Anchor backend running on http://localhost:${PORT}`)
   console.log(`API endpoints:`)
   console.log(`  POST /api/extract/anchor   — extract attributes from anchor images`)
-  console.log(`  POST /api/extract/catalog   — extract attributes from catalog images`)
-  console.log(`  POST /api/verify            — run full verification pipeline`)
+  console.log(`  POST /api/verify            — single-prompt verification pipeline`)
   console.log(`  GET  /api/csv/template      — download Myntra CSV template`)
   console.log(`  POST /api/csv/upload        — upload seller CSV`)
   console.log(`  GET  /api/csv/:id           — get CSV data`)

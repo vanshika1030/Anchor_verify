@@ -1,9 +1,9 @@
 """
-Visual similarity via MobileNetV2 embeddings.
+Visual similarity via CLIP embeddings.
 
-Extracts deep feature vectors from garment images using a pretrained
-MobileNetV2 backbone (classifier head removed), then computes cosine
-similarity as a holistic "do these look like the same garment?" signal.
+Extracts deep feature vectors from garment images using OpenAI's CLIP 
+(ViT-B/32), then computes cosine similarity for highly accurate semantic 
+and textural matching between anchor and catalog fabrics.
 """
 
 from __future__ import annotations
@@ -15,64 +15,57 @@ import numpy as np
 import torch
 import torch.nn as nn
 from PIL import Image
-from torchvision import models, transforms
+from transformers import CLIPProcessor, CLIPModel
 
 logger = logging.getLogger(__name__)
 
-# ── Preprocessing pipeline matching ImageNet training stats ───────────────
-_preprocess = transforms.Compose([
-    transforms.Resize(256),
-    transforms.CenterCrop(224),
-    transforms.ToTensor(),
-    transforms.Normalize(
-        mean=[0.485, 0.456, 0.406],
-        std=[0.229, 0.224, 0.225],
-    ),
-])
-
 # Module-level model cache so we only load once.
-_model: Optional[nn.Module] = None
+_model = None
+_processor = None
 
-
-def load_embedder() -> nn.Module:
-    """Load a pretrained MobileNetV2 with classifier replaced by identity.
-
-    The resulting model outputs a 1280-dimensional feature vector for
-    each input image.  The model is cached at module level.
+def load_embedder():
+    """Load pretrained CLIP model (ViT-B/32) and processor.
+    The model is cached at module level.
     """
-    global _model
-    if _model is not None:
-        return _model
+    global _model, _processor
+    if _model is not None and _processor is not None:
+        return _model, _processor
 
-    logger.info("Loading MobileNetV2 embedder…")
-    base = models.mobilenet_v2(weights=models.MobileNet_V2_Weights.DEFAULT)
-    base.classifier = nn.Identity()  # strip the 1000-class head
-    base.eval()
+    logger.info("Loading CLIP embedder (openai/clip-vit-base-patch32)…")
+    # Using the standard OpenAI CLIP model from HuggingFace
+    _model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32")
+    _processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
+    _model.eval()
 
-    _model = base
-    return _model
+    return _model, _processor
 
 
-def get_embedding(model: nn.Module, image: Image.Image) -> np.ndarray:
-    """Extract a 1280-dim feature vector from an image.
+def get_embedding(model_and_processor, image: Image.Image) -> np.ndarray:
+    """Extract a feature vector from an image using CLIP.
 
     Parameters
     ----------
-    model : nn.Module
-        MobileNetV2 model returned by :func:`load_embedder`.
+    model_and_processor : tuple
+        (CLIPModel, CLIPProcessor) returned by load_embedder.
     image : PIL.Image.Image
-        Garment image (RGB or RGBA — converted automatically).
+        Garment image.
 
     Returns
     -------
     numpy.ndarray
-        1-D float32 array of shape ``(1280,)``.
+        1-D float32 array (512-dimensional for ViT-B/32).
     """
+    model, processor = model_and_processor
     rgb = image.convert("RGB")
-    tensor = _preprocess(rgb).unsqueeze(0)  # (1, 3, 224, 224)
+    
+    # Process image
+    inputs = processor(images=rgb, return_tensors="pt")
 
     with torch.no_grad():
-        features = model(tensor)  # (1, 1280)
+        # Get image features
+        features = model.get_image_features(**inputs)
+        # Normalize features
+        features = features / features.norm(p=2, dim=-1, keepdim=True)
 
     return features.squeeze(0).numpy().astype(np.float32)
 
@@ -96,6 +89,4 @@ def compute_similarity(
         return 0.0
 
     similarity = float(dot / (norm1 * norm2))
-    # Clamp to [0, 1] — cosine can go slightly negative for very
-    # different images; we treat that as "zero similarity".
     return max(0.0, min(1.0, similarity))

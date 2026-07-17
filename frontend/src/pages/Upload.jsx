@@ -222,8 +222,11 @@ export default function Upload() {
             </div>
           ) : (
             <div className="info-box" style={{ marginBottom: 20 }}>
-              We will generate 5 catalog images using your anchor photos as reference, following Myntra specs.
-              You'll review them before verification.
+              <div style={{ fontWeight: 600, marginBottom: 6, fontSize: 14 }}>✨ AI Listing Generation</div>
+              <div style={{ lineHeight: 1.6 }}>
+                We'll use your anchor photos to auto-generate a complete Myntra listing — title, description, key features, tags, and care instructions.
+                Your product photos will be verified against your declared attributes.
+              </div>
             </div>
           )}
         </>

@@ -28,6 +28,7 @@ from verification.embeddings import load_embedder, get_embedding, compute_simila
 from verification.localization import localize_mismatches
 from verification.verdict import generate_verdict
 from verification.size_chart import check_size_chart
+from verification.pose import analyze_proportions
 from generation.catalog_gen import try_generate_with_fallback, create_fallback_catalog
 from generation.metadata_gen import generate_metadata
 from utils.image_utils import resize_for_model, image_to_base64, create_white_background
@@ -57,7 +58,7 @@ embedder = None
 @app.on_event("startup")
 async def startup():
     global embedder
-    logger.info("Loading MobileNetV2 embedder...")
+    logger.info("Loading CLIP embedder...")
     embedder = load_embedder()
     logger.info("Embedder loaded.")
 
@@ -342,6 +343,45 @@ async def health():
         "embedder_loaded": embedder is not None,
     }
 
+
+# ══════════════════════════════════════════════════════════════════════════
+#  HYBRID PIPELINE ENDPOINTS (MATH ENGINE)
+# ══════════════════════════════════════════════════════════════════════════
+
+@app.post("/analyze/fabric")
+async def analyze_fabric_endpoint(
+    anchor_image: UploadFile = File(...),
+    catalog_image: UploadFile = File(...)
+):
+    """Calculates deterministic cosine similarity between two fabrics using CLIP."""
+    if embedder is None:
+        raise HTTPException(status_code=503, detail="Embedder not loaded yet.")
+        
+    anchor_img = _read_image(anchor_image)
+    catalog_img = _read_image(catalog_image)
+    
+    anchor_emb = get_embedding(embedder, anchor_img)
+    catalog_emb = get_embedding(embedder, catalog_img)
+    similarity = compute_similarity(anchor_emb, catalog_emb)
+    
+    return JSONResponse({
+        "success": True, 
+        "similarity_score": similarity,
+        "is_match": similarity >= 0.85 # Math threshold
+    })
+
+@app.post("/analyze/proportions")
+async def analyze_proportions_endpoint(
+    catalog_image: UploadFile = File(...)
+):
+    """Calculates mathematical proportions using MediaPipe 3D body landmarks."""
+    catalog_img = _read_image(catalog_image)
+    result = analyze_proportions(catalog_img)
+    
+    if "error" in result:
+        return JSONResponse({"success": False, "error": result["error"]}, status_code=400)
+        
+    return JSONResponse({"success": True, "data": result})
 
 # ── Run ───────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
