@@ -44,7 +44,7 @@ function getCacheKey(promptParts) {
   const hash = crypto.createHash('sha256')
   for (const p of promptParts) {
     if (p.text) hash.update(p.text)
-    if (p.inlineData) hash.update(p.inlineData.data.slice(0, 500)) // Hash first 500 chars of image for speed
+    if (p.inlineData) hash.update(p.inlineData.data) // Hash FULL image data — no truncation
   }
   return hash.digest('hex')
 }
@@ -60,33 +60,15 @@ async function callWithRetry(promptParts, modelIdx = 0, attempt = 0) {
   }
 
   if (modelIdx >= MODELS.length) {
-    console.warn('All models exhausted! Using MOCK DEMO DATA to prevent crash.')
-    return JSON.stringify({
-      "garment_type": {"value": "Kurti", "confidence": "HIGH"},
-      "primary_color": {"value": "Navy Blue", "confidence": "HIGH"},
-      "secondary_color": {"value": "None", "confidence": "HIGH"},
-      "pattern_type": {"value": "Solid", "confidence": "HIGH"},
-      "fabric_appearance": {"value": "Cotton", "confidence": "HIGH"},
-      "overall_length": {"value": "Short / Hip Length", "confidence": "HIGH"},
-      "sleeve_length": {"value": "3/4 sleeve", "confidence": "HIGH"},
-      "neck_type": {"value": "Round neck", "confidence": "HIGH"},
-      "silhouette": {"value": "Straight", "confidence": "MEDIUM"},
-      "fit": {"value": "Regular", "confidence": "HIGH"},
-      "embellishment": {"value": "None", "confidence": "HIGH"},
-      "transparency": {"value": "Opaque", "confidence": "HIGH"},
-      "hemline": {"value": "Straight", "confidence": "MEDIUM"},
-      "occasion_style": {"value": "Casual", "confidence": "HIGH"},
-      "motif_description": {"value": "None", "confidence": "HIGH"},
-      "closure_type": {"value": "Slip on", "confidence": "MEDIUM"},
-      "structural_features": {"value": "None", "confidence": "MEDIUM"},
-      "model_apparent_height": {"value": "average (5'4-5'7)", "confidence": "MEDIUM"},
-      "model_apparent_build": {"value": "slim (XS-S)", "confidence": "MEDIUM"}
-    })
+    throw new Error('All Gemini models exhausted — API rate limit reached. Please wait 60 seconds and try again.')
   }
 
   const modelName = MODELS[modelIdx]
   try {
-    const model = genAI.getGenerativeModel({ model: modelName })
+    const model = genAI.getGenerativeModel({ 
+      model: modelName,
+      generationConfig: { temperature: 0 }  // Maximum consistency
+    })
     const result = await model.generateContent(promptParts)
     const text = result.response.text()
     
@@ -137,75 +119,82 @@ function fileToInlineData(filePath) {
   }
 }
 
-// ─── Prompts (with Guardrails) ─────────────────────────────
+// ─── Strict Enum Lists (forces consistent terminology) ────────────
+
+const ENUMS = {
+  garment_type: ['Kurti', 'Kurta', 'Dress', 'Top', 'Shirt', 'Blouse', 'Tunic', 'Saree', 'Lehenga', 'Dupatta', 'Palazzo', 'Skirt', 'Trousers', 'Jeans', 'Shorts', 'Jumpsuit', 'Co-ord Set', 'Shrug', 'Jacket', 'Sweater', 'T-shirt', 'Gown', 'Kaftan', 'Sharara', 'Churidar', 'Salwar', 'Nehru Jacket', 'Other'],
+  primary_color: ['Black', 'White', 'Navy Blue', 'Red', 'Pink', 'Green', 'Yellow', 'Orange', 'Purple', 'Brown', 'Grey', 'Beige', 'Maroon', 'Teal', 'Turquoise', 'Coral', 'Peach', 'Lavender', 'Mustard', 'Olive', 'Cream', 'Rust', 'Gold', 'Silver', 'Multi-color', 'Other'],
+  secondary_color: ['None', 'Black', 'White', 'Navy Blue', 'Red', 'Pink', 'Green', 'Yellow', 'Orange', 'Purple', 'Brown', 'Grey', 'Beige', 'Maroon', 'Gold', 'Silver', 'Multi-color', 'Other'],
+  pattern_type: ['Solid', 'Floral', 'Striped', 'Checked', 'Polka Dot', 'Geometric', 'Abstract', 'Paisley', 'Animal Print', 'Tribal', 'Ikat', 'Bandhani', 'Block Print', 'Ethnic Motif', 'Graphic', 'Colorblocked', 'Ombre', 'Embroidered', 'Self-design', 'Not determinable'],
+  fabric_appearance: ['Cotton', 'Silk', 'Georgette', 'Chiffon', 'Crepe', 'Rayon', 'Polyester', 'Linen', 'Denim', 'Velvet', 'Satin', 'Net', 'Lace', 'Knit', 'Jersey', 'Wool', 'Khadi', 'Chanderi', 'Banarasi', 'Organza', 'Not determinable'],
+  overall_length: ['Crop', 'Waist Length', 'Hip Length', 'Knee Length', 'Below Knee', 'Calf Length', 'Ankle Length', 'Floor Length', 'Not determinable'],
+  sleeve_length: ['Sleeveless', 'Cap Sleeve', 'Short Sleeve', 'Elbow Length', '3/4 Sleeve', 'Full Sleeve', 'Not determinable'],
+  neck_type: ['Round Neck', 'V-Neck', 'Mandarin Collar', 'Shirt Collar', 'Square Neck', 'Boat Neck', 'Keyhole', 'Sweetheart', 'Halter', 'Off-Shoulder', 'Stand Collar', 'Cowl Neck', 'Tie-Up', 'Not determinable'],
+  silhouette: ['A-Line', 'Straight', 'Fit and Flare', 'Bodycon', 'Peplum', 'Asymmetric', 'Wrap', 'Tent', 'Sheath', 'Not determinable'],
+  fit: ['Slim', 'Regular', 'Relaxed', 'Oversized', 'Not determinable'],
+  embellishment: ['None', 'Embroidery', 'Sequins', 'Beadwork', 'Mirror Work', 'Zari', 'Lace Trim', 'Tassels', 'Buttons', 'Patchwork', 'Not determinable'],
+  transparency: ['Opaque', 'Semi-Sheer', 'Sheer', 'Not determinable'],
+  hemline: ['Straight', 'Curved', 'Asymmetric', 'High-Low', 'Scalloped', 'Ruffled', 'Not determinable'],
+  occasion_style: ['Casual', 'Formal', 'Party', 'Ethnic', 'Festive', 'Office', 'Lounge', 'Bridal', 'Not determinable'],
+  motif_description: ['None', 'Floral', 'Paisley', 'Geometric', 'Animal', 'Abstract', 'Tribal', 'Mandala', 'Botanical', 'Birds', 'Not determinable'],
+  closure_type: ['Slip On', 'Button', 'Zip', 'Tie-Up', 'Hook and Eye', 'Drawstring', 'Wrap', 'Not determinable'],
+  structural_features: ['None', 'Pleats', 'Gathers', 'Pintucks', 'Darts', 'Side Slits', 'Pockets', 'Belt/Sash', 'Layered', 'Not determinable'],
+}
+
+function buildEnumPromptSection() {
+  return Object.entries(ENUMS).map(([key, values]) => 
+    `  "${key}": MUST be one of: ${JSON.stringify(values)}`
+  ).join('\n')
+}
+
+// ─── Prompts (with Strict Enums) ─────────────────────────────
 
 const ANCHOR_PROMPT = `You are a garment attribute extraction system for Myntra (Indian fashion e-commerce).
-You are given images of a REAL physical garment (flat-lay or handheld photos taken by the seller). These are the ground truth.
+You are given images of a REAL physical garment (flat-lay or handheld photos taken by the seller).
 
-GUARDRAILS:
-1. FLAT-LAY LENGTH: It is extremely hard to guess "overall_length" from a folded flat-lay. If the garment is folded or not worn by a human, heavily prefer "Not determinable" for overall_length unless strictly obvious.
-2. PRINTS VS EMBELLISHMENTS: Do not confuse a printed pattern (e.g. floral print) with physical embellishments (e.g. sequins, embroidery). If it is just printed fabric, embellishment is "None".
-3. PATTERN IDENTIFICATION: Do not default to "Solid" unless you are highly confident there is no visible print, texture variation, or motif. If you are unsure, describe the pattern or use "Not determinable".
+CRITICAL RULES:
+1. Each attribute value MUST be chosen from the allowed list below. Do NOT invent new values.
+2. FLAT-LAY LENGTH: If the garment is folded or not worn, set overall_length to "Not determinable".
+3. PATTERN: Do NOT default to "Solid" unless you are certain there is no print, texture, or motif.
+4. PRINTS VS EMBELLISHMENTS: Printed patterns are NOT embellishments. If the fabric is printed, embellishment is "None".
 
-Analyze ALL provided images together and extract these attributes. For each, give:
-- "value": your best detection (be specific, e.g. "Elbow length" not just "Medium")
-- "confidence": "HIGH" (clearly visible), "MEDIUM" (partially visible, inferring), "LOW" (cannot determine)
+ALLOWED VALUES:
+${buildEnumPromptSection()}
 
-If you genuinely cannot determine an attribute, set value to "Not determinable" with confidence "LOW".
+For each attribute, return:
+- "value": chosen from the allowed list above
+- "confidence": "HIGH" | "MEDIUM" | "LOW"
 
-Return ONLY valid JSON (no markdown, no explanation):
+Return ONLY valid JSON (no markdown):
 {
-  "garment_type": {"value": "", "confidence": ""},
-  "primary_color": {"value": "", "confidence": ""},
-  "secondary_color": {"value": "", "confidence": ""},
-  "pattern_type": {"value": "", "confidence": ""},
-  "fabric_appearance": {"value": "", "confidence": ""},
-  "overall_length": {"value": "", "confidence": ""},
-  "sleeve_length": {"value": "", "confidence": ""},
-  "neck_type": {"value": "", "confidence": ""},
-  "silhouette": {"value": "", "confidence": ""},
-  "fit": {"value": "", "confidence": ""},
-  "embellishment": {"value": "", "confidence": ""},
-  "transparency": {"value": "", "confidence": ""},
-  "hemline": {"value": "", "confidence": ""},
-  "occasion_style": {"value": "", "confidence": ""},
-  "motif_description": {"value": "", "confidence": ""},
-  "closure_type": {"value": "", "confidence": ""},
-  "structural_features": {"value": "", "confidence": ""}
+${Object.keys(ENUMS).map(k => `  "${k}": {"value": "", "confidence": ""}`).join(',\n')}
 }`
 
-const CATALOG_PROMPT = `You are a garment attribute extraction system for Myntra (Indian fashion e-commerce).
-You are given CATALOG images — the images shoppers will see. They may be professional studio shots with a model.
+const CATALOG_PROMPT_JOINT = `You are a garment attribute extraction system for Myntra.
 
-GUARDRAILS:
-1. PRINTS VS EMBELLISHMENTS: Do not confuse a printed pattern with physical embellishments. If it is printed fabric, embellishment is "None".
+You are given TWO sets of images of the SAME garment:
+- ANCHOR images (flat-lay photos of the real product) — these appear FIRST
+- CATALOG images (studio/model shots for the listing) — these appear AFTER
 
-Analyze ALL images together and extract attributes. For each, give value + confidence (HIGH/MEDIUM/LOW).
+Your job: extract attributes from the CATALOG images.
+Because these are the SAME garment, use EXACTLY the same terminology for both.
+If the anchor looks "Floral", the catalog MUST also say "Floral", not "Printed".
+
+CRITICAL RULES:
+1. Each attribute value MUST be chosen from the allowed list below.
+2. Use the SAME value as you would for the anchor images, since it is the same garment.
+3. PRINTS VS EMBELLISHMENTS: Printed fabric is NOT an embellishment.
+
+ALLOWED VALUES:
+${buildEnumPromptSection()}
 
 ALSO estimate the model's appearance (if visible):
-- model_apparent_height: STRICTLY pick one: "petite (under 5'4)" | "average (5'4-5'7)" | "tall (5'8+)"
-- model_apparent_build: STRICTLY pick one: "slim (XS-S)" | "average (S-M)" | "athletic (M-L)" | "plus-size (L-XXL)"
-If no human model visible, set both to "No model visible".
+- model_apparent_height: MUST be one of: ["petite (under 5'4)", "average (5'4-5'7)", "tall (5'8+)", "No model visible"]
+- model_apparent_build: MUST be one of: ["slim (XS-S)", "average (S-M)", "athletic (M-L)", "plus-size (L-XXL)", "No model visible"]
 
 Return ONLY valid JSON:
 {
-  "garment_type": {"value": "", "confidence": ""},
-  "primary_color": {"value": "", "confidence": ""},
-  "secondary_color": {"value": "", "confidence": ""},
-  "pattern_type": {"value": "", "confidence": ""},
-  "fabric_appearance": {"value": "", "confidence": ""},
-  "overall_length": {"value": "", "confidence": ""},
-  "sleeve_length": {"value": "", "confidence": ""},
-  "neck_type": {"value": "", "confidence": ""},
-  "silhouette": {"value": "", "confidence": ""},
-  "fit": {"value": "", "confidence": ""},
-  "embellishment": {"value": "", "confidence": ""},
-  "transparency": {"value": "", "confidence": ""},
-  "hemline": {"value": "", "confidence": ""},
-  "occasion_style": {"value": "", "confidence": ""},
-  "motif_description": {"value": "", "confidence": ""},
-  "closure_type": {"value": "", "confidence": ""},
-  "structural_features": {"value": "", "confidence": ""},
+${Object.keys(ENUMS).map(k => `  "${k}": {"value": "", "confidence": ""}`).join(',\n')},
   "model_apparent_height": {"value": "", "confidence": ""},
   "model_apparent_build": {"value": "", "confidence": ""}
 }`
@@ -555,9 +544,13 @@ export async function extractAnchorAttributes(imagePaths) {
   return attrs
 }
 
-export async function extractCatalogAttributes(imagePaths) {
-  const parts = [CATALOG_PROMPT]
-  for (const p of imagePaths) { parts.push(fileToInlineData(p)) }
+export async function extractCatalogAttributes(catalogPaths, anchorPaths = []) {
+  // JOINT PROMPTING: feed anchor images first for context, then catalog images
+  const parts = [{ text: CATALOG_PROMPT_JOINT }]
+  // Anchor images first (context)
+  for (const p of anchorPaths) { parts.push(fileToInlineData(p)) }
+  // Then catalog images (what we're extracting from)
+  for (const p of catalogPaths) { parts.push(fileToInlineData(p)) }
   const text = await callWithRetry(parts)
   return parseJSON(text)
 }
@@ -612,11 +605,23 @@ export function checkModelProportions(catalogAttrs, declaredHeight, declaredSize
 }
 
 export async function generateListingMetadata(imagePaths, attributes) {
-  const promptText = `Generate a highly optimized e-commerce product title (max 60 chars) and 3 short SEO bullet points based on these attributes: ${JSON.stringify(attributes)}. 
-  Return ONLY valid JSON: { "title": "...", "bullets": ["...", "...", "..."], "trend_tags": ["..."] }`
+  const promptText = `You are a Myntra listing generator. Generate a complete product listing based on these verified attributes: ${JSON.stringify(attributes)}.
+
+Return ONLY valid JSON with these exact keys:
+{
+  "title": "Product title, max 60 chars, SEO-optimized for Myntra search",
+  "description": "2-3 sentence product description highlighting key features",
+  "bullets": ["Bullet 1", "Bullet 2", "Bullet 3"],
+  "key_features": ["Feature 1", "Feature 2", "Feature 3", "Feature 4"],
+  "tags": ["tag1", "tag2", "tag3", "tag4", "tag5"],
+  "category_path": "Women > Ethnic Wear > Kurtis",
+  "ideal_for": "Women",
+  "fabric_details": "Fabric composition",
+  "care_instructions": "Wash care instructions",
+  "size_fit_note": "Size and fit note for the buyer"
+}`
   
   const parts = [{ text: promptText }]
-  // Optionally attach the first image if available
   if (imagePaths && imagePaths.length > 0) {
     parts.push(fileToInlineData(imagePaths[0]))
   }
@@ -626,8 +631,7 @@ export async function generateListingMetadata(imagePaths, attributes) {
 }
 
 export async function generateCatalogImage(imagePaths, attributes, cvOverallLength) {
-  // Compositing instead of synthesizing!
-  // We take the real segmented garment (via our Python CLI) and composite it onto a clean background.
+  // Real compositing: segment the garment and place it on a clean e-commerce background.
   if (!imagePaths || imagePaths.length === 0) return null
   
   const anchorPath = imagePaths[0]
@@ -635,21 +639,51 @@ export async function generateCatalogImage(imagePaths, attributes, cvOverallLeng
   const outputPath = path.join(process.cwd(), 'uploads', `gen_${parsedPath.name}.png`)
   
   try {
+    // Step 1: Get segmented cutout (real garment, no background)
     let sourceBuffer
-    if (cvOverallLength && cvOverallLength.cutout_path) {
+    if (cvOverallLength && cvOverallLength.cutout_path && fs.existsSync(cvOverallLength.cutout_path)) {
       sourceBuffer = fs.readFileSync(cvOverallLength.cutout_path)
     } else {
-      sourceBuffer = fs.readFileSync(anchorPath)
+      // Try to segment on the fly
+      try {
+        const pythonScript = path.join(process.cwd(), 'services', 'segmentation_cli.py')
+        const { stdout } = await execFileAsync('python', [pythonScript, anchorPath], { maxBuffer: 1024 * 1024 * 10 })
+        const segResult = JSON.parse(stdout)
+        if (segResult.success && segResult.cutout_path) {
+          sourceBuffer = fs.readFileSync(segResult.cutout_path)
+        } else {
+          sourceBuffer = fs.readFileSync(anchorPath)
+        }
+      } catch {
+        sourceBuffer = fs.readFileSync(anchorPath)
+      }
     }
     
-    await sharp(sourceBuffer)
-      .resize(600, 800, { fit: 'contain', background: { r: 245, g: 245, b: 245, alpha: 1 } })
-      .composite([{
-        input: Buffer.from('<svg><rect x="0" y="0" width="600" height="800" fill="none" stroke="#ddd" stroke-width="10"/></svg>'),
-        top: 0,
-        left: 0
-      }])
-      .toFile(outputPath)
+    // Step 2: Resize the garment to fit within the canvas, preserving aspect ratio
+    const resizedGarment = await sharp(sourceBuffer)
+      .resize(500, 700, { fit: 'inside', withoutEnlargement: false })
+      .png()
+      .toBuffer()
+    
+    // Step 3: Create a clean white canvas and composite the garment centered on it
+    const garmentMeta = await sharp(resizedGarment).metadata()
+    const canvasW = 600
+    const canvasH = 800
+    const left = Math.round((canvasW - garmentMeta.width) / 2)
+    const top = Math.round((canvasH - garmentMeta.height) / 2)
+    
+    // Create SVG border that matches the canvas exactly
+    const borderSvg = `<svg width="${canvasW}" height="${canvasH}"><rect x="4" y="4" width="${canvasW - 8}" height="${canvasH - 8}" fill="none" stroke="#e0e0e0" stroke-width="2" rx="8"/></svg>`
+    
+    await sharp({
+      create: { width: canvasW, height: canvasH, channels: 4, background: { r: 248, g: 248, b: 248, alpha: 1 } }
+    })
+    .composite([
+      { input: resizedGarment, top, left },
+      { input: Buffer.from(borderSvg), top: 0, left: 0 }
+    ])
+    .png()
+    .toFile(outputPath)
       
     return `http://localhost:3001/uploads/gen_${parsedPath.name}.png`
   } catch (err) {

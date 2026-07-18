@@ -1,7 +1,4 @@
 import { Router } from 'express'
-import fs from 'fs'
-import axios from 'axios'
-import FormData from 'form-data'
 import {
   extractCatalogAttributes,
   compareAttributesDeterministic,
@@ -52,7 +49,23 @@ router.post('/', async (req, res) => {
       console.log(`[VERIFY] Running CLIP visual similarity check...`)
       clipResult = await runClipSimilarity(anchorPaths[0], catalogPaths[0])
       
-      if (clipResult && !clipResult.is_match) {
+      if (!clipResult) {
+        // CLIP failed to run entirely — return UNVERIFIED, never silently pass
+        console.warn(`[VERIFY] CLIP gate failed to execute — returning UNVERIFIED`)
+        return res.json({
+          success: true,
+          mode: 'verify',
+          comparison: [],
+          catalog_attributes: {},
+          modelIssues: [],
+          fabricResult: { fabric_matches_anchor: false, confidence: 'LOW', issue: 'CLIP similarity check could not run. Visual gate unavailable.' },
+          verdict: { status: 'UNVERIFIED', reason: 'Visual similarity check failed to execute. Cannot verify.', critical_fails: 0, warnings: 1 },
+          corrections: [],
+          generatedMetadata: null
+        })
+      }
+
+      if (!clipResult.is_match) {
         console.log(`[VERIFY] CLIP check failed: similarity is ${(clipResult.similarity_score * 100).toFixed(1)}%`)
         return res.json({
           success: true,
@@ -76,13 +89,15 @@ router.post('/', async (req, res) => {
           generatedMetadata: null
         })
       }
+
+      console.log(`[VERIFY] CLIP gate passed: ${(clipResult.similarity_score * 100).toFixed(1)}% similarity`)
     }
 
     // ── Step 2: Extract catalog attributes ──────────────────────────
     if (!isGenerateMode && catalogPaths.length > 0) {
       console.log(`[VERIFY] Extracting catalog attributes from ${catalogPaths.length} images...`)
       try {
-        catalogAttrs = await extractCatalogAttributes(catalogPaths)
+        catalogAttrs = await extractCatalogAttributes(catalogPaths, anchorPaths)
         console.log(`[VERIFY] Catalog extraction done: ${Object.keys(catalogAttrs).length} attributes`)
       } catch (err) {
         console.error('[VERIFY] Catalog extraction failed:', err.message)

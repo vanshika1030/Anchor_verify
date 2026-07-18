@@ -160,11 +160,13 @@ export default function Verify() {
         {v.status === 'PASS' && <CheckCircle size={20} color="var(--success)" />}
         {v.status === 'FAIL' && <XCircle size={20} color="var(--danger)" />}
         {v.status === 'WARNING' && <AlertTriangle size={20} color="var(--warning)" />}
+        {v.status === 'UNVERIFIED' && <AlertTriangle size={20} color="var(--text-tertiary)" />}
         <div style={{ flex: 1 }}>
           <div className="verdict-title">{v.reason}</div>
           <div className="verdict-sub">
             {v.status === 'FAIL' ? 'Fix the issues below before publishing' :
              v.status === 'WARNING' ? 'Review warnings below. You can still publish.' :
+             v.status === 'UNVERIFIED' ? 'Verification could not complete. Please retry or check your setup.' :
              mode === 'generate' ? 'Your listing metadata is ready to publish.' :
              'Your listing is ready to publish.'}
           </div>
@@ -476,7 +478,7 @@ export default function Verify() {
           <button className="btn btn-outline btn-sm" onClick={() => nav('/new-listing/upload')}>
             Replace images
           </button>
-          {v.status === 'FAIL' ? (
+          {(v.status === 'FAIL' || v.status === 'UNVERIFIED') ? (
             <button className="btn btn-primary btn-sm" disabled>Publish (blocked)</button>
           ) : (
             <button className="btn btn-primary btn-sm" onClick={handlePublish}>
