@@ -8,6 +8,7 @@ import {
   generateVerdict,
   checkModelProportions,
   generateListingMetadata,
+  generateCatalogImage,
   generateCorrections,
 } from '../services/gemini.js'
 
@@ -75,7 +76,7 @@ router.post('/', async (req, res) => {
         console.log(`[VERIFY] Metadata generated: "${generatedMetadata?.title?.substring(0, 50)}..."`)
         
         // Actually generate a visual image!
-        const imageUrl = await generateCatalogImage(parsedDeclared)
+        const imageUrl = await generateCatalogImage(anchorPaths, parsedDeclared)
         generatedMetadata.generated_image_url = imageUrl
         console.log(`[VERIFY] Catalog image generated: ${imageUrl}`)
       } catch (metaErr) {

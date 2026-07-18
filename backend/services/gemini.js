@@ -3,6 +3,10 @@ import fs from 'fs'
 import path from 'path'
 import sharp from 'sharp'
 import crypto from 'crypto'
+import { execFile } from 'child_process'
+import { promisify } from 'util'
+
+const execFileAsync = promisify(execFile)
 
 const CACHE_DIR = path.join(process.cwd(), '.cache')
 if (!fs.existsSync(CACHE_DIR)) fs.mkdirSync(CACHE_DIR)
@@ -141,6 +145,7 @@ You are given images of a REAL physical garment (flat-lay or handheld photos tak
 GUARDRAILS:
 1. FLAT-LAY LENGTH: It is extremely hard to guess "overall_length" from a folded flat-lay. If the garment is folded or not worn by a human, heavily prefer "Not determinable" for overall_length unless strictly obvious.
 2. PRINTS VS EMBELLISHMENTS: Do not confuse a printed pattern (e.g. floral print) with physical embellishments (e.g. sequins, embroidery). If it is just printed fabric, embellishment is "None".
+3. PATTERN IDENTIFICATION: Do not default to "Solid" unless you are highly confident there is no visible print, texture variation, or motif. If you are unsure, describe the pattern or use "Not determinable".
 
 Analyze ALL provided images together and extract these attributes. For each, give:
 - "value": your best detection (be specific, e.g. "Elbow length" not just "Medium")
@@ -348,8 +353,8 @@ export function compareAttributesDeterministic(anchorAttrs, catalogAttrs, declar
     const declaredVal = getAttrValue(declaredAttrs, key)
     const category = getSynonymCategory(key)
 
-    const anchorConf = getAttrConfidence(anchorAttrs, key)
-    const catalogConf = getAttrConfidence(catalogAttrs, key)
+    let anchorConf = getAttrConfidence(anchorAttrs, key)
+    let catalogConf = getAttrConfidence(catalogAttrs, key)
 
     if (!anchorVal && !catalogVal && !declaredVal) {
       return { key, anchor_value: null, catalog_value: null, declared_value: null,
@@ -362,6 +367,23 @@ export function compareAttributesDeterministic(anchorAttrs, catalogAttrs, declar
 
     let status = 'match'
     let note = ''
+    
+    // Cross-check LLM length with CV length
+    if (key === 'overall_length' && anchorAttrs.cv_overall_length) {
+      const cvVal = anchorAttrs.cv_overall_length.value
+      const llmCvMatch = fuzzyMatch(anchorVal, cvVal, category)
+      if (llmCvMatch === 'mismatch' && anchorVal !== 'Not determinable') {
+        note = `Visual AI estimated "${anchorVal}" but Geometric check says "${cvVal}". Please confirm.`
+        status = 'warning'
+        severity = 'HIGH'
+        anchorConf = 'LOW' // Disagreement lowers confidence
+        return {
+          key, anchor_value: anchorVal, catalog_value: catalogVal, declared_value: declaredVal,
+          status, severity, anchor_confidence: anchorConf, catalog_confidence: catalogConf, note,
+          needs_review: true, suggested_fallback: cvVal
+        }
+      }
+    }
 
     if (acResult === 'mismatch' && anchorVal && catalogVal) {
       status = 'mismatch'
@@ -433,27 +455,20 @@ export function generateVerdict(comparison, modelIssues = []) {
  */
 export async function getGarmentBoundingBoxRatio(imagePath) {
   try {
-    const buffer = fs.readFileSync(imagePath)
-    // sharp.trim() removes all transparent background pixels
-    const { info } = await sharp(buffer)
-      .trim()
-      .toBuffer({ resolveWithObject: true })
+    const pythonScript = path.join(process.cwd(), 'services', 'segmentation_cli.py')
     
-    const ratio = info.height / info.width
+    // Call python script via execFile for security (no shell injection)
+    const { stdout } = await execFileAsync('python', [pythonScript, imagePath], { maxBuffer: 1024 * 1024 * 10 })
     
-    // Determine mathematical length
-    let mathematicalLength = 'Not determinable'
-    if (ratio < 1.2) {
-      mathematicalLength = 'Short / Hip Length'
-    } else if (ratio >= 1.2 && ratio <= 1.5) {
-      mathematicalLength = 'Knee Length / Midi'
-    } else if (ratio > 1.5) {
-      mathematicalLength = 'Below Knee / Long'
+    const result = JSON.parse(stdout)
+    if (result.success) {
+      return { ratio: result.ratio.toFixed(2), length_category: result.length_category }
+    } else {
+      console.warn("Segmentation CLI returned error:", result.error)
+      return null
     }
-    
-    return { ratio: ratio.toFixed(2), length_category: mathematicalLength }
   } catch (err) {
-    console.warn("Could not calculate aspect ratio:", err.message)
+    console.warn("Could not calculate aspect ratio using rembg:", err.message)
     return null
   }
 }
@@ -476,7 +491,11 @@ export function generateCorrections(comparisonResult, modelIssues = []) {
           field: row.key,
           current_value: row.declared_value,
           suggested_value: visualTruth,
-          reason: `Our system detected this as "${visualTruth}" in the images rather than "${row.declared_value}". Updating this improves search accuracy.`
+          confidence: row.anchor_confidence || 'MEDIUM',
+          needs_review: row.needs_review || (row.anchor_confidence !== 'HIGH'),
+          reason: row.needs_review 
+            ? row.note 
+            : `Our visual analysis thinks this is "${visualTruth}" rather than "${row.declared_value}". Could you confirm? Updating this improves search accuracy.`
         })
       }
     }
@@ -489,7 +508,9 @@ export function generateCorrections(comparisonResult, modelIssues = []) {
         field: issue.attr.toLowerCase().replace(' ', '_'),
         current_value: issue.declared,
         suggested_value: match[1],
-        reason: `The catalog model matches a "${match[1]}" profile. Updating this ensures your item appears in the right fit filters.`
+        confidence: issue.confidence || 'MEDIUM',
+        needs_review: issue.confidence !== 'HIGH',
+        reason: `The catalog model seems to match a "${match[1]}" profile. Could you confirm? Updating this ensures your item appears in the right fit filters.`
       })
     }
   })
@@ -509,10 +530,12 @@ export async function extractAnchorAttributes(imagePaths) {
   if (imagePaths.length > 0) {
     const cvRatio = await getGarmentBoundingBoxRatio(imagePaths[0])
     if (cvRatio && attrs.overall_length) {
-      // Overwrite LLM guess with CV Math
-      attrs.overall_length.value = cvRatio.length_category
-      attrs.overall_length.confidence = "HIGH (Math Verified)"
-      attrs.cv_ratio = cvRatio.ratio // Add for transparency
+      // DO NOT blindly overwrite the LLM. Keep it as an independent signal.
+      attrs.cv_overall_length = {
+        value: cvRatio.length_category,
+        confidence: "HIGH",
+        ratio: cvRatio.ratio
+      }
     }
   }
   
@@ -575,9 +598,48 @@ export function checkModelProportions(catalogAttrs, declaredHeight, declaredSize
   return issues;
 }
 
-export async function generateListingMetadata(attributes) {
-  // We do not want an LLM doing this in production, but leaving it for now to fulfill the interface
-  const prompt = `Generate a title (max 60 chars) and 3 short SEO bullets based on these attributes: ${JSON.stringify(attributes)}. Return JSON: { "title": "", "bullets": [] }`
-  const text = await callWithRetry([{ text: prompt }])
+export async function generateListingMetadata(imagePaths, attributes) {
+  const promptText = `Generate a highly optimized e-commerce product title (max 60 chars) and 3 short SEO bullet points based on these attributes: ${JSON.stringify(attributes)}. 
+  Return ONLY valid JSON: { "title": "...", "bullets": ["...", "...", "..."], "trend_tags": ["..."] }`
+  
+  const parts = [{ text: promptText }]
+  // Optionally attach the first image if available
+  if (imagePaths && imagePaths.length > 0) {
+    parts.push(fileToInlineData(imagePaths[0]))
+  }
+  
+  const text = await callWithRetry(parts)
   return parseJSON(text)
+}
+
+export async function generateCatalogImage(imagePaths, attributes) {
+  // Compositing instead of synthesizing!
+  // We take the real segmented garment (via our Python CLI) and composite it onto a clean background.
+  if (!imagePaths || imagePaths.length === 0) return null
+  
+  const anchorPath = imagePaths[0]
+  const parsedPath = path.parse(anchorPath)
+  const outputPath = path.join(process.cwd(), 'uploads', `gen_${parsedPath.name}.png`)
+  
+  try {
+    const pythonScript = path.join(process.cwd(), 'services', 'segmentation_cli.py')
+    // We modify the CLI to output the segmented image. Since we didn't do that yet, 
+    // for this demo we will just simulate the composite by placing the anchor on a grey card.
+    // Real implementation would pipe the RGBA buffer out of Python.
+    
+    const buffer = fs.readFileSync(anchorPath)
+    await sharp(buffer)
+      .resize(600, 800, { fit: 'contain', background: { r: 245, g: 245, b: 245, alpha: 1 } })
+      .composite([{
+        input: Buffer.from('<svg><rect x="0" y="0" width="600" height="800" fill="none" stroke="#ddd" stroke-width="10"/></svg>'),
+        top: 0,
+        left: 0
+      }])
+      .toFile(outputPath)
+      
+    return `http://localhost:3001/uploads/gen_${parsedPath.name}.png`
+  } catch (err) {
+    console.error("Failed to composite catalog image:", err)
+    return null
+  }
 }
