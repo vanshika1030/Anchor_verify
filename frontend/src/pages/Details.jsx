@@ -65,13 +65,15 @@ export default function Details() {
   const handleContinue = () => {
     const confirmed = {}
     attrs.forEach(a => { confirmed[a.key] = a.value })
-    confirmed.fabric_composition = fabric
-    confirmed.chest = chest
-    confirmed.front_length = frontLen
-    confirmed.sleeve_length_inches = sleeveLen
-    confirmed.wash_care = washCare
-    confirmed.model_height = modelH
-    confirmed.model_size = modelS
+    // Only include manual fields if they have actual values
+    // Empty strings would confuse the backend's comparison engine
+    if (fabric.trim()) confirmed.fabric_composition = fabric.trim()
+    if (chest.trim()) confirmed.chest = chest.trim()
+    if (frontLen.trim()) confirmed.front_length = frontLen.trim()
+    if (sleeveLen.trim()) confirmed.sleeve_length_inches = sleeveLen.trim()
+    if (washCare.trim()) confirmed.wash_care = washCare.trim()
+    if (modelH.trim()) confirmed.model_height = modelH.trim()
+    if (modelS.trim()) confirmed.model_size = modelS.trim()
     setConfirmedAttrs(confirmed)
     nav('/new-listing/verify')
   }

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useApp } from '../AppContext'
 import Stepper from '../components/Stepper'
@@ -26,6 +26,7 @@ export default function Verify() {
     anchorExtracted, setCatalogExtracted,
     comparisonResult, setComparisonResult,
     fabricResult, setFabricResult,
+    phashResult, setPhashResult,
     verdict, setVerdict,
     modelIssues, setModelIssues,
     csvSessionId, csvRowIndex,
@@ -41,6 +42,14 @@ export default function Verify() {
   
   // Simulated checklist progress
   const [checklistStep, setChecklistStep] = useState(0)
+  const intervalRef = useRef(null)
+
+  // Cleanup interval on unmount to prevent zombie state updates
+  useEffect(() => {
+    return () => {
+      if (intervalRef.current) clearInterval(intervalRef.current)
+    }
+  }, [])
 
   useEffect(() => {
     if (comparisonResult && verdict) {
@@ -63,7 +72,7 @@ export default function Verify() {
 
       // Start the simulated checklist progression for the UI
       setChecklistStep(0)
-      const interval = setInterval(() => {
+      intervalRef.current = setInterval(() => {
         setChecklistStep(prev => Math.min(prev + 1, 3))
       }, 3500)
 
@@ -80,17 +89,21 @@ export default function Verify() {
       setCatalogExtracted(result.catalog_attributes || null)
       setModelIssues(result.modelIssues || [])
       setFabricResult(result.fabricResult || null)
+      setPhashResult(result.phashResult || null)
       setVerdict(result.verdict || { status: 'PASS', reason: 'Completed', critical_issues: [] })
       if (result.generatedMetadata) setGeneratedMetadata(result.generatedMetadata)
       if (result.corrections) setCorrections(result.corrections)
       
-      clearInterval(interval)
       setChecklistStep(4) // All done
 
     } catch (err) {
       console.error('Verification failed:', err)
       setError(err.message)
     } finally {
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current)
+        intervalRef.current = null
+      }
       setLoading(false)
     }
   }
@@ -473,11 +486,12 @@ export default function Verify() {
       {/* Fabric verification */}
       {fabricResult && (
         <div className="card">
-          <div className="card-title" style={{ fontSize: 14 }}>Fabric verification (CLIP)</div>
+          <div className="card-title" style={{ fontSize: 14 }}>Visual Similarity (CLIP)</div>
 
-          {v.math_fabric_score !== undefined && (
+          {fabricResult.similarity_score !== undefined && (
             <div style={{ fontSize: 12, marginBottom: 8, padding: '4px 8px', background: 'var(--bg-highlight)', borderRadius: 4, display: 'inline-block', border: '1px solid var(--border)' }}>
-              <strong>CLIP Similarity Score:</strong> {(v.math_fabric_score * 100).toFixed(1)}%
+              <strong>CLIP Cosine Similarity:</strong> {(fabricResult.similarity_score * 100).toFixed(1)}%
+              {fabricResult.source && <span style={{ marginLeft: 6, color: 'var(--text-tertiary)' }}>({fabricResult.source})</span>}
             </div>
           )}
 
@@ -490,6 +504,32 @@ export default function Verify() {
             <div style={{ color: 'var(--danger)', fontSize: 13, lineHeight: 1.6 }}>
               <XCircle size={14} style={{ verticalAlign: -2, marginRight: 4 }} />
               {fabricResult.issue || 'Fabric appearance differs between anchor and catalog'}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* pHash Perceptual Hashing */}
+      {phashResult && (
+        <div className="card">
+          <div className="card-title" style={{ fontSize: 14 }}>Perceptual Hash (pHash)</div>
+          <div style={{ display: 'flex', gap: 20, alignItems: 'center', marginBottom: 8 }}>
+            <div style={{ fontSize: 12, padding: '4px 8px', background: 'var(--bg-highlight)', borderRadius: 4, border: '1px solid var(--border)' }}>
+              <strong>Hamming Distance:</strong> {phashResult.phash_distance}
+            </div>
+            <div style={{ fontSize: 12, padding: '4px 8px', background: 'var(--bg-highlight)', borderRadius: 4, border: '1px solid var(--border)' }}>
+              <strong>Similarity:</strong> {(phashResult.similarity_score * 100).toFixed(1)}%
+            </div>
+          </div>
+          {phashResult.is_match ? (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: 'var(--success)' }}>
+              <CheckCircle size={14} />
+              Images are perceptually identical or near-identical (distance ≤ 10)
+            </div>
+          ) : (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: 'var(--warning)' }}>
+              <AlertTriangle size={14} />
+              Images differ significantly at the pixel level (distance {phashResult.phash_distance}). This is normal for different photo angles.
             </div>
           )}
         </div>

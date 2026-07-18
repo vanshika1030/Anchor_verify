@@ -21,6 +21,7 @@ export function AppProvider({ children }) {
   const [catalogExtracted, setCatalogExtracted] = useState(null)
   const [comparisonResult, setComparisonResult] = useState(null)
   const [fabricResult, setFabricResult] = useState(null)
+  const [phashResult, setPhashResult] = useState(null)
   const [verdict, setVerdict] = useState(null)
   const [modelIssues, setModelIssues] = useState([])
 
@@ -38,7 +39,7 @@ export function AppProvider({ children }) {
     setCatalogFiles([]); setCatalogPreviews([])
     setMode('upload'); setConfirmedAttrs(null)
     setAnchorExtracted(null); setCatalogExtracted(null)
-    setComparisonResult(null); setFabricResult(null)
+    setComparisonResult(null); setFabricResult(null); setPhashResult(null)
     setVerdict(null); setModelIssues([])
     setError(null)
     // We intentionally DO NOT reset csvSessionId so the user can continue verifying other rows.
@@ -65,6 +66,7 @@ export function AppProvider({ children }) {
       catalogExtracted, setCatalogExtracted,
       comparisonResult, setComparisonResult,
       fabricResult, setFabricResult,
+      phashResult, setPhashResult,
       verdict, setVerdict,
       modelIssues, setModelIssues,
       csvSessionId, setCsvSessionId,

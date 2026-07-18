@@ -47,7 +47,7 @@ const upload = multer({
 
 // Health check
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', engine: 'groq', model: 'meta-llama/llama-4-scout-17b-16e-instruct' })
+  res.json({ status: 'ok', engine: 'gemini', model: 'gemini-2.0-flash', architecture: 'multi-layer-ensemble' })
 })
 
 // Extract routes — accepts multiple images

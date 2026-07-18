@@ -11,7 +11,7 @@ import {
   runPhashSimilarity,
   runVitInference
 } from '../services/gemini.js'
-import { ROUTING_TABLE, VIT_CONFIDENCE_THRESHOLD } from '../config/routing_config.js'
+import { ROUTING_TABLE, VIT_CONFIDENCE_THRESHOLD, VIT_KEY_MAP } from '../config/routing_config.js'
 
 const router = Router()
 
@@ -123,17 +123,32 @@ router.post('/', async (req, res) => {
       try {
         const geminiAttrs = await extractCatalogAttributes(catalogPaths, anchorPaths)
         
-        // Route and Merge
+        // Route and Merge — translate ViT short keys to canonical keys
+        // Build a reverse map: canonical key -> ViT key (e.g. "sleeve_length" -> "sleeve")
+        const reverseVitMap = {}
+        for (const [vitKey, canonicalKey] of Object.entries(VIT_KEY_MAP)) {
+          reverseVitMap[canonicalKey] = vitKey
+        }
+
         Object.keys(ROUTING_TABLE).forEach(attr => {
            const primary = ROUTING_TABLE[attr]
            let finalAttr = { value: 'Not determinable', confidence: 0, source: 'None' }
            
-           if (primary === 'ViT' && vitResult && vitResult[attr]) {
-             const vitConf = vitResult[attr].confidence
-             if (vitConf >= VIT_CONFIDENCE_THRESHOLD) {
-               finalAttr = { ...vitResult[attr], source: 'ViT' }
+           if (primary === 'ViT' && vitResult) {
+             // Look up using the ViT's actual output key (e.g. "sleeve" for canonical "sleeve_length")
+             const vitKey = reverseVitMap[attr] || attr
+             const vitData = vitResult[vitKey]
+             
+             if (vitData) {
+               const vitConf = vitData.confidence
+               if (vitConf >= VIT_CONFIDENCE_THRESHOLD) {
+                 finalAttr = { ...vitData, source: 'ViT' }
+               } else if (geminiAttrs[attr]) {
+                 console.log(`[ROUTING] ViT confidence low (${vitConf}) for ${attr}, falling back to Gemini`)
+                 finalAttr = { ...geminiAttrs[attr], source: 'Gemini (Fallback)' }
+               }
              } else if (geminiAttrs[attr]) {
-               console.log(`[ROUTING] ViT confidence low (${vitConf}) for ${attr}, falling back to Gemini`)
+               // ViT didn't return this attribute at all — use Gemini
                finalAttr = { ...geminiAttrs[attr], source: 'Gemini (Fallback)' }
              }
            } else if (geminiAttrs[attr]) {
