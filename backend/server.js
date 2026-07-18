@@ -4,7 +4,7 @@ import cors from 'cors'
 import multer from 'multer'
 import path from 'path'
 import { fileURLToPath } from 'url'
-import { initOpenAI } from './services/openai.js'
+import { initGemini } from './services/gemini.js'
 import extractRoutes from './routes/extract.js'
 import verifyRoutes from './routes/verify.js'
 import csvRoutes from './routes/csv.js'
@@ -13,13 +13,13 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const app = express()
 const PORT = process.env.PORT || 3001
 
-// ─── Init LLM (Groq + Llama 4 Scout) ────────────────────────────────
-if (!process.env.GROQ_API_KEY) {
-  console.error('GROQ_API_KEY not set in .env')
+// 🚀 Init LLM (Gemini)
+if (!process.env.GEMINI_API_KEY) {
+  console.error('GEMINI_API_KEY not set in .env')
   process.exit(1)
 }
-initOpenAI(process.env.GROQ_API_KEY)
-console.log('Groq initialized with Llama 4 Scout 17B (vision)')
+initGemini(process.env.GEMINI_API_KEY)
+console.log('Gemini initialized successfully')
 
 // ─── Middleware ──────────────────────────────────────────────────────
 app.use(cors({ origin: 'http://localhost:5173', credentials: true }))

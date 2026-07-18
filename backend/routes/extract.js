@@ -1,5 +1,5 @@
 import { Router } from 'express'
-import { extractAnchorAttributes } from '../services/openai.js'
+import { extractAnchorAttributes } from '../services/gemini.js'
 
 const router = Router()
 

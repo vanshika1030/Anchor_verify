@@ -8,7 +8,8 @@ import {
   generateVerdict,
   checkModelProportions,
   generateListingMetadata,
-} from '../services/openai.js'
+  generateCorrections,
+} from '../services/gemini.js'
 
 const router = Router()
 
@@ -143,6 +144,7 @@ router.post('/', async (req, res) => {
         issue: mathScores.fabric.is_match ? null : `CLIP similarity ${(mathScores.fabric.similarity_score * 100).toFixed(1)}% below threshold`,
       } : null,
       verdict,
+      corrections: generateCorrections(comparison, modelIssues),
       generatedMetadata,
     })
 

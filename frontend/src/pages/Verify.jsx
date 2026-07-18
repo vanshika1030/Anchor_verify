@@ -37,6 +37,7 @@ export default function Verify() {
   const [selectedCat, setSelectedCat] = useState(0)
   const [expandedRow, setExpandedRow] = useState(null)
   const [generatedMetadata, setGeneratedMetadata] = useState(null)
+  const [corrections, setCorrections] = useState(null)
 
   useEffect(() => {
     if (comparisonResult && verdict) {
@@ -77,6 +78,7 @@ export default function Verify() {
       setFabricResult(result.fabricResult || null)
       setVerdict(result.verdict || { status: 'PASS', reason: 'Completed', critical_issues: [] })
       if (result.generatedMetadata) setGeneratedMetadata(result.generatedMetadata)
+      if (result.corrections) setCorrections(result.corrections)
 
     } catch (err) {
       console.error('Verification failed:', err)
@@ -174,7 +176,48 @@ export default function Verify() {
         </div>
       </div>
 
-      {/* ═══ GENERATED METADATA (generate mode only) ═══ */}
+      {/* 🚀 AI CORRECTION CO-PILOT */}
+      {corrections && corrections.length > 0 && (
+        <div className="card" style={{ borderLeft: '4px solid var(--accent)', marginTop: 20, animation: 'fadeIn 0.5s ease' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+            <Sparkles size={20} color="var(--accent)" />
+            <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--accent)' }}>AI Correction Co-Pilot</div>
+          </div>
+          <div style={{ fontSize: 14, color: 'var(--text-secondary)', marginBottom: 16 }}>
+            We noticed some discrepancies between your inputs and our visual analysis. Applying these fixes will improve your listing's search ranking and reduce returns.
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            {corrections.map((c, i) => (
+              <div key={i} style={{ background: '#f8f9fa', borderRadius: 8, padding: 12, border: '1px solid var(--border)' }}>
+                <div style={{ fontSize: 13, fontWeight: 600, textTransform: 'capitalize', color: 'var(--text-secondary)', marginBottom: 4 }}>
+                  {c.field.replace('_', ' ')}
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8 }}>
+                  <div style={{ textDecoration: 'line-through', color: 'var(--danger)', fontSize: 14 }}>{c.current_value}</div>
+                  <ArrowRight size={14} color="var(--text-secondary)" />
+                  <div style={{ fontWeight: 600, color: 'var(--success)', fontSize: 14 }}>{c.suggested_value}</div>
+                </div>
+                <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+                  {c.reason}
+                </div>
+                <div style={{ marginTop: 10, display: 'flex', gap: 8 }}>
+                  <button className="btn btn-primary" style={{ padding: '6px 12px', fontSize: 12 }} onClick={() => {
+                     // In a real app, this would automatically update the seller's input
+                     alert(`Accepted fix for ${c.field}`)
+                  }}>
+                    Accept Fix
+                  </button>
+                  <button className="btn btn-outline" style={{ padding: '6px 12px', fontSize: 12 }}>
+                    Ignore
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* ✨ GENERATED METADATA (generate mode only) ✨ */}
       {generatedMetadata && (
         <div className="card" style={{ borderLeft: '3px solid var(--accent)', marginTop: 20 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14 }}>
