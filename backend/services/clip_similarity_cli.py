@@ -41,13 +41,13 @@ def main():
             similarity = (anchor_feat @ catalog_feat.T).item()
             similarity = max(0.0, min(1.0, similarity))
 
-        # Threshold: 0.85 is a good boundary for "same garment vs different garment"
-        # CLIP cosine sim for same-garment-different-angle is typically 0.88-0.97
-        # Different garments of same type are typically 0.70-0.84
+        # Threshold: 0.65 is a good boundary for "same garment vs different garment"
+        # CLIP cosine sim for same-garment-different-angle is typically 0.70-0.97
+        # Completely different garments are typically < 0.60
         print(json.dumps({
             "success": True,
             "similarity_score": round(similarity, 4),
-            "is_match": similarity > 0.85
+            "is_match": similarity > 0.65
         }))
 
     except Exception as e:

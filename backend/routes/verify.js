@@ -125,19 +125,24 @@ router.post('/', async (req, res) => {
 
     // ── Step 6: Generate listing metadata + image (generate mode only)
     if (isGenerateMode) {
-      console.log(`[VERIFY] Generate mode — creating listing metadata...`)
+      console.log(`[VERIFY] Generate mode — creating listing metadata and image...`)
+      
+      // Metadata generation (LLM dependent, can fail on rate limit)
       try {
         generatedMetadata = await generateListingMetadata(anchorPaths, parsedDeclared)
         console.log(`[VERIFY] Metadata generated: "${generatedMetadata?.title?.substring(0, 50)}..."`)
-        
-        // Actually generate a visual image!
-        // We pass the parsedAnchor.cv_overall_length so we can use the cutout!
-        const imageUrl = await generateCatalogImage(anchorPaths, parsedDeclared, parsedAnchor.cv_overall_length)
-        generatedMetadata.generated_image_url = imageUrl
-        console.log(`[VERIFY] Catalog image generated: ${imageUrl}`)
       } catch (metaErr) {
-        console.warn('[VERIFY] Generation failed (non-critical):', metaErr.message)
-        generatedMetadata = null
+        console.warn('[VERIFY] Metadata generation failed (rate limit?):', metaErr.message)
+        generatedMetadata = {} // Ensure we have an object to attach the image URL to
+      }
+
+      // Image compositing (Local CV, independent of LLM rate limits)
+      try {
+        const imageUrl = await generateCatalogImage(anchorPaths, parsedDeclared, parsedAnchor.cv_overall_length)
+        if (generatedMetadata) generatedMetadata.generated_image_url = imageUrl
+        console.log(`[VERIFY] Catalog image generated: ${imageUrl}`)
+      } catch (imgErr) {
+        console.error('[VERIFY] Image generation failed:', imgErr.message)
       }
     }
 
