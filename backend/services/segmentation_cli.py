@@ -46,10 +46,16 @@ def main():
         else:
             mathematical_length = "Below Knee / Long"
             
+        import os
+        import uuid
+        cutout_path = os.path.join(os.path.dirname(input_path), f"cutout_{uuid.uuid4().hex}.png")
+        cutout.save(cutout_path)
+            
         print(json.dumps({
             "success": True,
             "ratio": ratio,
-            "length_category": mathematical_length
+            "length_category": mathematical_length,
+            "cutout_path": cutout_path
         }))
         
     except Exception as e:

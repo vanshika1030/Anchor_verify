@@ -10,6 +10,7 @@ import {
   generateListingMetadata,
   generateCatalogImage,
   generateCorrections,
+  runClipSimilarity
 } from '../services/gemini.js'
 
 const router = Router()
@@ -35,12 +36,49 @@ router.post('/', async (req, res) => {
     const anchorPaths = anchorFiles.map(f => f.path)
     const catalogPaths = catalogFiles.map(f => f.path)
 
-    const isGenerateMode = mode === 'generate' || catalogPaths.length === 0
+    const isGenerateMode = mode === 'generate'
+    
+    if (!isGenerateMode && catalogPaths.length === 0) {
+      return res.status(400).json({ success: false, error: "Please upload catalog images to run verification." })
+    }
 
     let catalogAttrs = {}
     let generatedMetadata = null
+    let modelIssues = []
 
-    // ── Step 1: Extract catalog attributes ──────────────────────────
+    // ── Step 1: Mandatory CLIP Similarity Check (NO LLM) ────────────
+    let clipResult = null
+    if (!isGenerateMode && anchorPaths.length > 0 && catalogPaths.length > 0) {
+      console.log(`[VERIFY] Running CLIP visual similarity check...`)
+      clipResult = await runClipSimilarity(anchorPaths[0], catalogPaths[0])
+      
+      if (clipResult && !clipResult.is_match) {
+        console.log(`[VERIFY] CLIP check failed: similarity is ${(clipResult.similarity_score * 100).toFixed(1)}%`)
+        return res.json({
+          success: true,
+          mode: 'verify',
+          comparison: [],
+          catalog_attributes: {},
+          modelIssues: [],
+          fabricResult: {
+            fabric_matches_anchor: false,
+            confidence: 'HIGH',
+            similarity_score: clipResult.similarity_score,
+            issue: `These do not appear to be the same garment. Visual similarity is only ${(clipResult.similarity_score * 100).toFixed(1)}%.`
+          },
+          verdict: {
+            status: 'FAIL',
+            reason: 'Critical visual mismatch between anchor and catalog item.',
+            critical_fails: 1,
+            warnings: 0
+          },
+          corrections: [],
+          generatedMetadata: null
+        })
+      }
+    }
+
+    // ── Step 2: Extract catalog attributes ──────────────────────────
     if (!isGenerateMode && catalogPaths.length > 0) {
       console.log(`[VERIFY] Extracting catalog attributes from ${catalogPaths.length} images...`)
       try {
@@ -49,10 +87,11 @@ router.post('/', async (req, res) => {
       } catch (err) {
         console.error('[VERIFY] Catalog extraction failed:', err.message)
         catalogAttrs = {}
+        modelIssues.push({ extractionFailed: true })
       }
     }
 
-    // ── Step 2: Deterministic comparison (NO LLM) ───────────────────
+    // ── Step 3: Deterministic comparison (NO LLM) ───────────────────
     console.log(`[VERIFY] Running deterministic comparison with synonym matching...`)
     const comparison = compareAttributesDeterministic(
       parsedAnchor,   // anchor attributes (extracted on Upload page)
@@ -60,15 +99,16 @@ router.post('/', async (req, res) => {
       parsedDeclared,  // seller declarations (from Details page)
     )
 
-    // ── Step 3: Model proportion check (deterministic) ──────────────
+    // ── Step 4: Model proportion check (deterministic) ──────────────
     const modelHeight = parsedDeclared.model_height || ''
     const modelSize = parsedDeclared.model_size || ''
-    const modelIssues = checkModelProportions(catalogAttrs, modelHeight, modelSize)
+    const proportionIssues = checkModelProportions(catalogAttrs, modelHeight, modelSize)
+    modelIssues.push(...proportionIssues)
 
-    // ── Step 4: Deterministic verdict ───────────────────────────────
+    // ── Step 5: Deterministic verdict ───────────────────────────────
     const verdict = generateVerdict(comparison, modelIssues)
 
-    // ── Step 5: Generate listing metadata + image (generate mode only)
+    // ── Step 6: Generate listing metadata + image (generate mode only)
     if (isGenerateMode) {
       console.log(`[VERIFY] Generate mode — creating listing metadata...`)
       try {
@@ -76,7 +116,8 @@ router.post('/', async (req, res) => {
         console.log(`[VERIFY] Metadata generated: "${generatedMetadata?.title?.substring(0, 50)}..."`)
         
         // Actually generate a visual image!
-        const imageUrl = await generateCatalogImage(anchorPaths, parsedDeclared)
+        // We pass the parsedAnchor.cv_overall_length so we can use the cutout!
+        const imageUrl = await generateCatalogImage(anchorPaths, parsedDeclared, parsedAnchor.cv_overall_length)
         generatedMetadata.generated_image_url = imageUrl
         console.log(`[VERIFY] Catalog image generated: ${imageUrl}`)
       } catch (metaErr) {
@@ -85,46 +126,8 @@ router.post('/', async (req, res) => {
       }
     }
 
-    // ── Step 6 (optional): Python hybrid enhancement ────────────────
-    const pythonUrl = 'http://localhost:8000'
-    let mathScores = {}
-
-    if (anchorPaths.length > 0 && catalogPaths.length > 0) {
-      // CLIP fabric similarity
-      try {
-        const form = new FormData()
-        form.append('anchor_image', fs.createReadStream(anchorPaths[0]))
-        form.append('catalog_image', fs.createReadStream(catalogPaths[0]))
-        const fabRes = await axios.post(`${pythonUrl}/analyze/fabric`, form, {
-          headers: form.getHeaders(), timeout: 5000,
-        })
-        if (fabRes.data?.success) {
-          mathScores.fabric = fabRes.data
-          console.log(`[VERIFY] CLIP fabric similarity: ${(fabRes.data.similarity_score * 100).toFixed(1)}%`)
-        }
-      } catch (err) {
-        // Silently skip — Python service is optional
-      }
-
-      // MediaPipe proportions
-      try {
-        const form = new FormData()
-        form.append('catalog_image', fs.createReadStream(catalogPaths[0]))
-        const propRes = await axios.post(`${pythonUrl}/analyze/proportions`, form, {
-          headers: form.getHeaders(), timeout: 5000,
-        })
-        if (propRes.data?.success) {
-          mathScores.proportions = propRes.data.data
-          console.log(`[VERIFY] MediaPipe: hemline at ${mathScores.proportions.mathematical_length_category}`)
-        }
-      } catch (err) {
-        // Silently skip
-      }
-    }
-
-    // Attach math scores to verdict
-    if (mathScores.fabric) verdict.math_fabric_score = mathScores.fabric.similarity_score
-    if (mathScores.proportions) verdict.math_proportions = mathScores.proportions
+    // Remove the old python call (Step 6 optional) entirely, since we replaced it with local CLI
+    // and just use the clipResult directly.
 
     // ── Response ────────────────────────────────────────────────────
     const matchCount = comparison.filter(r => r.status === 'match').length
@@ -138,11 +141,11 @@ router.post('/', async (req, res) => {
       comparison,
       catalog_attributes: catalogAttrs,
       modelIssues,
-      fabricResult: mathScores.fabric ? {
-        fabric_matches_anchor: mathScores.fabric.is_match,
+      fabricResult: clipResult ? {
+        fabric_matches_anchor: clipResult.is_match,
         confidence: 'HIGH',
-        similarity_score: mathScores.fabric.similarity_score,
-        issue: mathScores.fabric.is_match ? null : `CLIP similarity ${(mathScores.fabric.similarity_score * 100).toFixed(1)}% below threshold`,
+        similarity_score: clipResult.similarity_score,
+        issue: null,
       } : null,
       verdict,
       corrections: generateCorrections(comparison, modelIssues),

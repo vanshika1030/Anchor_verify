@@ -424,6 +424,15 @@ export function generateVerdict(comparison, modelIssues = []) {
   let status = 'PASS'
   let reason = 'All checks passed — product matches catalog attributes closely.'
 
+  if (modelIssues.find(i => i.extractionFailed)) {
+    return {
+      status: 'UNVERIFIED',
+      reason: 'Could not complete check. Missing or failed catalog attribute extraction.',
+      critical_fails: 0,
+      warnings: 0
+    }
+  }
+
   if (criticalCount > 0) {
     status = 'FAIL'
     const issues = [...highFails.map(f => f.key), ...modelIssues.map(m => m.attr)]
@@ -462,7 +471,11 @@ export async function getGarmentBoundingBoxRatio(imagePath) {
     
     const result = JSON.parse(stdout)
     if (result.success) {
-      return { ratio: result.ratio.toFixed(2), length_category: result.length_category }
+      return { 
+        ratio: result.ratio.toFixed(2), 
+        length_category: result.length_category,
+        cutout_path: result.cutout_path
+      }
     } else {
       console.warn("Segmentation CLI returned error:", result.error)
       return null
@@ -612,7 +625,7 @@ export async function generateListingMetadata(imagePaths, attributes) {
   return parseJSON(text)
 }
 
-export async function generateCatalogImage(imagePaths, attributes) {
+export async function generateCatalogImage(imagePaths, attributes, cvOverallLength) {
   // Compositing instead of synthesizing!
   // We take the real segmented garment (via our Python CLI) and composite it onto a clean background.
   if (!imagePaths || imagePaths.length === 0) return null
@@ -622,13 +635,14 @@ export async function generateCatalogImage(imagePaths, attributes) {
   const outputPath = path.join(process.cwd(), 'uploads', `gen_${parsedPath.name}.png`)
   
   try {
-    const pythonScript = path.join(process.cwd(), 'services', 'segmentation_cli.py')
-    // We modify the CLI to output the segmented image. Since we didn't do that yet, 
-    // for this demo we will just simulate the composite by placing the anchor on a grey card.
-    // Real implementation would pipe the RGBA buffer out of Python.
+    let sourceBuffer
+    if (cvOverallLength && cvOverallLength.cutout_path) {
+      sourceBuffer = fs.readFileSync(cvOverallLength.cutout_path)
+    } else {
+      sourceBuffer = fs.readFileSync(anchorPath)
+    }
     
-    const buffer = fs.readFileSync(anchorPath)
-    await sharp(buffer)
+    await sharp(sourceBuffer)
       .resize(600, 800, { fit: 'contain', background: { r: 245, g: 245, b: 245, alpha: 1 } })
       .composite([{
         input: Buffer.from('<svg><rect x="0" y="0" width="600" height="800" fill="none" stroke="#ddd" stroke-width="10"/></svg>'),
@@ -643,3 +657,22 @@ export async function generateCatalogImage(imagePaths, attributes) {
     return null
   }
 }
+
+export async function runClipSimilarity(anchorPath, catalogPath) {
+  try {
+    const pythonScript = path.join(process.cwd(), 'services', 'clip_similarity_cli.py')
+    const { stdout } = await execFileAsync('python', [pythonScript, anchorPath, catalogPath], { maxBuffer: 1024 * 1024 * 10 })
+    
+    const result = JSON.parse(stdout)
+    if (result.success) {
+      return result
+    } else {
+      console.warn("CLIP CLI returned error:", result.error)
+      return null
+    }
+  } catch (err) {
+    console.warn("Could not calculate CLIP similarity:", err.message)
+    return null
+  }
+}
+
