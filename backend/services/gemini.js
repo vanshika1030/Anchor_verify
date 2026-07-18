@@ -12,7 +12,7 @@ const CACHE_DIR = path.join(process.cwd(), '.cache')
 if (!fs.existsSync(CACHE_DIR)) fs.mkdirSync(CACHE_DIR)
 
 const MODELS = ['gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-2.0-flash-lite']
-const MAX_RETRIES = 3
+const MAX_RETRIES = 1
 const BASE_DELAY_MS = 2000
 
 let genAI = null
@@ -40,7 +40,7 @@ export function initGemini(apiKey) {
 
 // ─── Async Queue for Rate Limit Prevention ─────────────────────
 const CONCURRENCY_LIMIT = 1;
-const QUEUE_DELAY_MS = 2000;
+const QUEUE_DELAY_MS = 5000;
 let activeCalls = 0;
 const callQueue = [];
 

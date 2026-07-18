@@ -5,15 +5,16 @@
 export const VIT_CONFIDENCE_THRESHOLD = 0.70;
 
 // ─── Key Translation ───
-// The ViT CLI outputs short keys ("sleeve", "neck").
-// Gemini and the comparison engine use canonical keys ("sleeve_length", "neck_type").
+// The ViT CLI outputs the keys from the training script heads.
+// Gemini and the comparison engine use canonical keys (like "fabric_appearance").
 // This map translates ViT output → canonical keys used everywhere else.
 export const VIT_KEY_MAP = {
-  "sleeve": "sleeve_length",
-  "neck": "neck_type",
-  // These two are already the same between ViT and Gemini:
+  "sleeve_length": "sleeve_length",
+  "neck_type": "neck_type",
   "garment_type": "garment_type",
   "overall_length": "overall_length",
+  "fabric_type": "fabric_appearance",
+  "primary_color": "primary_color",
 };
 
 export const ROUTING_TABLE = {
@@ -24,13 +25,13 @@ export const ROUTING_TABLE = {
   "sleeve_length": "ViT", 
   "neck_type": "ViT",
   "overall_length": "ViT",
+  "fabric_appearance": "ViT",
+  "primary_color": "ViT",
   
   // ─── Gemini Primary Attributes ───
   // These require open-ended reasoning, ethnic wear knowledge, or text comprehension.
-  "primary_color": "Gemini",
   "secondary_color": "Gemini",
   "pattern_type": "Gemini",
-  "fabric_appearance": "Gemini",
   "silhouette": "Gemini",
   "fit": "Gemini",
   "embellishment": "Gemini",

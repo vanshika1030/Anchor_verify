@@ -1,0 +1,68 @@
+{
+  "label_maps": {
+    "garment_type": [
+      "Blouse",
+      "Dress",
+      "Gown",
+      "Jacket",
+      "Jumpsuit",
+      "Shirt",
+      "Skirt",
+      "T-shirt",
+      "Top",
+      "Trousers"
+    ],
+    "sleeve_length": [
+      "Sleeveless",
+      "Short Sleeve",
+      "3/4 Sleeve",
+      "Full Sleeve"
+    ],
+    "neck_type": [
+      "Round Neck",
+      "V-Neck",
+      "Square Neck",
+      "Off-Shoulder",
+      "Shirt Collar",
+      "Mandarin Collar",
+      "Boat Neck",
+      "Keyhole"
+    ],
+    "overall_length": [
+      "Crop",
+      "Hip Length",
+      "Knee Length",
+      "Below Knee",
+      "Floor Length"
+    ],
+    "fabric_type": [
+      "Chiffon",
+      "Cotton",
+      "Denim",
+      "Fur",
+      "Knit",
+      "Lace",
+      "Leather",
+      "Linen",
+      "Silk",
+      "Synthetic",
+      "Velvet"
+    ],
+    "primary_color": [
+      "Beige",
+      "Black",
+      "Blue",
+      "Brown",
+      "Green",
+      "Grey",
+      "Multi",
+      "Orange",
+      "Pink",
+      "Purple",
+      "Red",
+      "White",
+      "Yellow"
+    ]
+  },
+  "best_score": 89.12213892496298
+}
