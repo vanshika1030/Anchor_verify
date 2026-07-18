@@ -38,6 +38,9 @@ export default function Verify() {
   const [expandedRow, setExpandedRow] = useState(null)
   const [generatedMetadata, setGeneratedMetadata] = useState(null)
   const [corrections, setCorrections] = useState(null)
+  
+  // Simulated checklist progress
+  const [checklistStep, setChecklistStep] = useState(0)
 
   useEffect(() => {
     if (comparisonResult && verdict) {
@@ -58,10 +61,11 @@ export default function Verify() {
         throw new Error('No anchor images found — go back and upload your product photos')
       }
 
-      setProgress(mode === 'generate'
-        ? 'Generating listing metadata & running self-check...'
-        : 'Running AI visual verification — comparing all images...'
-      )
+      // Start the simulated checklist progression for the UI
+      setChecklistStep(0)
+      const interval = setInterval(() => {
+        setChecklistStep(prev => Math.min(prev + 1, 3))
+      }, 3500)
 
       // ONE API call — sends all images to the single-prompt pipeline
       const result = await runVerification({
@@ -79,6 +83,9 @@ export default function Verify() {
       setVerdict(result.verdict || { status: 'PASS', reason: 'Completed', critical_issues: [] })
       if (result.generatedMetadata) setGeneratedMetadata(result.generatedMetadata)
       if (result.corrections) setCorrections(result.corrections)
+      
+      clearInterval(interval)
+      setChecklistStep(4) // All done
 
     } catch (err) {
       console.error('Verification failed:', err)
@@ -111,15 +118,36 @@ export default function Verify() {
       <div style={{ maxWidth: 500, margin: '80px auto', textAlign: 'center' }}>
         <Stepper steps={FLOW} current={2} />
         <div className="card" style={{ padding: '48px 32px' }}>
-          <Loader size={32} color="var(--accent)" className="spin" style={{ marginBottom: 16 }} />
-          <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 8 }}>
-            {mode === 'generate' ? 'Generating your listing' : 'Verifying your listing'}
+          <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 24 }}>
+            {mode === 'generate' ? 'Generating your listing' : 'Multi-Layered Verification Running...'}
           </div>
-          <div style={{ color: 'var(--text-secondary)', fontSize: 13, marginBottom: 20, lineHeight: 1.6 }}>
-            {progress}
+          
+          <div style={{ textAlign: 'left', background: '#f8f9fa', padding: 24, borderRadius: 8, fontSize: 14, color: 'var(--text-secondary)' }}>
+            
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 }}>
+              {checklistStep > 0 ? <CheckCircle size={18} color="var(--success)" /> : (checklistStep === 0 ? <Loader size={18} color="var(--accent)" className="spin" /> : <div style={{ width: 18, height: 18, borderRadius: '50%', border: '2px dashed #ccc' }} />)}
+              <span style={{ color: checklistStep >= 0 ? '#333' : '#888' }}>Checking physical garment match (CLIP & pHash)...</span>
+            </div>
+            
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 }}>
+              {checklistStep > 1 ? <CheckCircle size={18} color="var(--success)" /> : (checklistStep === 1 ? <Loader size={18} color="var(--accent)" className="spin" /> : <div style={{ width: 18, height: 18, borderRadius: '50%', border: '2px dashed #ccc' }} />)}
+              <span style={{ color: checklistStep >= 1 ? '#333' : '#888' }}>Extracting core attributes (Local ViT Model)...</span>
+            </div>
+            
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 }}>
+              {checklistStep > 2 ? <CheckCircle size={18} color="var(--success)" /> : (checklistStep === 2 ? <Loader size={18} color="var(--accent)" className="spin" /> : <div style={{ width: 18, height: 18, borderRadius: '50%', border: '2px dashed #ccc' }} />)}
+              <span style={{ color: checklistStep >= 2 ? '#333' : '#888' }}>Cross-referencing nuanced metadata (Gemini Async)...</span>
+            </div>
+            
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+              {checklistStep > 3 ? <CheckCircle size={18} color="var(--success)" /> : (checklistStep === 3 ? <Loader size={18} color="var(--accent)" className="spin" /> : <div style={{ width: 18, height: 18, borderRadius: '50%', border: '2px dashed #ccc' }} />)}
+              <span style={{ color: checklistStep >= 3 ? '#333' : '#888' }}>Running Bayesian verification math...</span>
+            </div>
+            
           </div>
-          <div style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>
-            This takes 10-20 seconds — AI is analyzing all your images in one pass
+          
+          <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 24 }}>
+            Executing ensemble architecture. This usually takes 10-15 seconds.
           </div>
         </div>
       </div>

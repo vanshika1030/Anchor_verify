@@ -7,8 +7,11 @@ import {
   generateListingMetadata,
   generateCatalogImage,
   generateCorrections,
-  runClipSimilarity
+  runClipSimilarity,
+  runPhashSimilarity,
+  runVitInference
 } from '../services/gemini.js'
+import { ROUTING_TABLE, VIT_CONFIDENCE_THRESHOLD } from '../config/routing_config.js'
 
 const router = Router()
 
@@ -43,11 +46,26 @@ router.post('/', async (req, res) => {
     let generatedMetadata = null
     let modelIssues = []
 
-    // ── Step 1: Mandatory CLIP Similarity Check (NO LLM) ────────────
+    // ── Step 1: Parallel Local Checks (CLIP, pHash, ViT) ────────────
     let clipResult = null
+    let phashResult = null
+    let vitResult = null
+
     if (!isGenerateMode && anchorPaths.length > 0 && catalogPaths.length > 0) {
-      console.log(`[VERIFY] Running CLIP visual similarity check...`)
-      clipResult = await runClipSimilarity(anchorPaths[0], catalogPaths[0])
+      console.log(`[VERIFY] Running local ML models in parallel (CLIP, pHash, ViT)...`)
+      
+      const anchorPath = anchorPaths[0]
+      const catalogPath = catalogPaths[0]
+
+      const [clipRes, phashRes, vitRes] = await Promise.all([
+        runClipSimilarity(anchorPath, catalogPath),
+        runPhashSimilarity(anchorPath, catalogPath),
+        runVitInference(catalogPath)
+      ])
+
+      clipResult = clipRes
+      phashResult = phashRes
+      vitResult = vitRes
       
       if (!clipResult) {
         // CLIP failed to run entirely — return UNVERIFIED, never silently pass
@@ -58,7 +76,8 @@ router.post('/', async (req, res) => {
           comparison: [],
           catalog_attributes: {},
           modelIssues: [],
-          fabricResult: { fabric_matches_anchor: false, confidence: 'LOW', issue: 'CLIP similarity check could not run. Visual gate unavailable.' },
+          fabricResult: { fabric_matches_anchor: false, confidence: 0, issue: 'CLIP similarity check could not run. Visual gate unavailable.', source: 'CLIP' },
+          phashResult: phashResult || null,
           verdict: { status: 'UNVERIFIED', reason: 'Visual similarity check failed to execute. Cannot verify.', critical_fails: 0, warnings: 1 },
           corrections: [],
           generatedMetadata: null
@@ -75,10 +94,12 @@ router.post('/', async (req, res) => {
           modelIssues: [],
           fabricResult: {
             fabric_matches_anchor: false,
-            confidence: 'HIGH',
+            confidence: 99,
             similarity_score: clipResult.similarity_score,
-            issue: `These do not appear to be the same garment. Visual similarity is only ${(clipResult.similarity_score * 100).toFixed(1)}%.`
+            issue: `These do not appear to be the same garment. Visual similarity is only ${(clipResult.similarity_score * 100).toFixed(1)}%.`,
+            source: 'CLIP'
           },
+          phashResult: phashResult || null,
           verdict: {
             status: 'FAIL',
             reason: 'Critical visual mismatch between anchor and catalog item.',
@@ -91,18 +112,45 @@ router.post('/', async (req, res) => {
       }
 
       console.log(`[VERIFY] CLIP gate passed: ${(clipResult.similarity_score * 100).toFixed(1)}% similarity`)
+      if (phashResult && phashResult.is_match) {
+        console.log(`[VERIFY] pHash identical match detected (distance: ${phashResult.phash_distance})`)
+      }
     }
 
-    // ── Step 2: Extract catalog attributes ──────────────────────────
+    // ── Step 2: Extract catalog attributes (Gemini) + Routing Merge ───
     if (!isGenerateMode && catalogPaths.length > 0) {
-      console.log(`[VERIFY] Extracting catalog attributes from ${catalogPaths.length} images...`)
+      console.log(`[VERIFY] Extracting catalog attributes from ${catalogPaths.length} images via Gemini...`)
       try {
-        catalogAttrs = await extractCatalogAttributes(catalogPaths, anchorPaths)
-        console.log(`[VERIFY] Catalog extraction done: ${Object.keys(catalogAttrs).length} attributes`)
+        const geminiAttrs = await extractCatalogAttributes(catalogPaths, anchorPaths)
+        
+        // Route and Merge
+        Object.keys(ROUTING_TABLE).forEach(attr => {
+           const primary = ROUTING_TABLE[attr]
+           let finalAttr = { value: 'Not determinable', confidence: 0, source: 'None' }
+           
+           if (primary === 'ViT' && vitResult && vitResult[attr]) {
+             const vitConf = vitResult[attr].confidence
+             if (vitConf >= VIT_CONFIDENCE_THRESHOLD) {
+               finalAttr = { ...vitResult[attr], source: 'ViT' }
+             } else if (geminiAttrs[attr]) {
+               console.log(`[ROUTING] ViT confidence low (${vitConf}) for ${attr}, falling back to Gemini`)
+               finalAttr = { ...geminiAttrs[attr], source: 'Gemini (Fallback)' }
+             }
+           } else if (geminiAttrs[attr]) {
+             finalAttr = { ...geminiAttrs[attr], source: 'Gemini' }
+           }
+           
+           catalogAttrs[attr] = finalAttr
+        })
+        
+        if (geminiAttrs.model_apparent_height) catalogAttrs.model_apparent_height = geminiAttrs.model_apparent_height
+        if (geminiAttrs.model_apparent_build) catalogAttrs.model_apparent_build = geminiAttrs.model_apparent_build
+        
+        console.log(`[VERIFY] Attribute Routing Merge complete: ${Object.keys(catalogAttrs).length} attributes`)
       } catch (err) {
         console.error('[VERIFY] Catalog extraction failed:', err.message)
         catalogAttrs = {}
-        modelIssues.push({ extractionFailed: true })
+        modelIssues.push({ extractionFailed: true, reason: 'LLM extraction timed out or failed.' })
       }
     }
 
@@ -163,10 +211,12 @@ router.post('/', async (req, res) => {
       modelIssues,
       fabricResult: clipResult ? {
         fabric_matches_anchor: clipResult.is_match,
-        confidence: 'HIGH',
+        confidence: 99,
         similarity_score: clipResult.similarity_score,
         issue: null,
+        source: 'CLIP'
       } : null,
+      phashResult: phashResult || null,
       verdict,
       corrections: generateCorrections(comparison, modelIssues),
       generatedMetadata,

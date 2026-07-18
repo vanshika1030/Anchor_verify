@@ -38,6 +38,36 @@ export function initGemini(apiKey) {
   genAI = new GoogleGenerativeAI(apiKey)
 }
 
+// ─── Async Queue for Rate Limit Prevention ─────────────────────
+const CONCURRENCY_LIMIT = 1;
+const QUEUE_DELAY_MS = 2000;
+let activeCalls = 0;
+const callQueue = [];
+
+function processQueue() {
+  if (activeCalls >= CONCURRENCY_LIMIT || callQueue.length === 0) return;
+  
+  activeCalls++;
+  const { resolve, reject, task } = callQueue.shift();
+  
+  task()
+    .then(resolve)
+    .catch(reject)
+    .finally(() => {
+      setTimeout(() => {
+        activeCalls--;
+        processQueue();
+      }, QUEUE_DELAY_MS);
+    });
+}
+
+function enqueueCall(task) {
+  return new Promise((resolve, reject) => {
+    callQueue.push({ resolve, reject, task });
+    processQueue();
+  });
+}
+
 // ─── Retry with backoff, model fallback & CACHING ────────────────
 
 function getCacheKey(promptParts) {
@@ -54,11 +84,19 @@ async function callWithRetry(promptParts, modelIdx = 0, attempt = 0) {
   const cacheFile = path.join(CACHE_DIR, `${cacheKey}.json`)
   
   // SMART FIX: If we have seen these images before, return instantly from cache!
+  // (We do this BEFORE the queue so cache hits are instant and don't block)
   if (fs.existsSync(cacheFile)) {
     console.log('[CACHE] ⚡ Cache hit! Bypassing API to save quota.')
     return fs.readFileSync(cacheFile, 'utf-8')
   }
 
+  // Wrap the actual API call logic inside the queue
+  return enqueueCall(async () => {
+     return _executeCallWithRetry(promptParts, cacheFile, modelIdx, attempt);
+  });
+}
+
+async function _executeCallWithRetry(promptParts, cacheFile, modelIdx = 0, attempt = 0) {
   if (modelIdx >= MODELS.length) {
     throw new Error('All Gemini models exhausted — API rate limit reached. Please wait 60 seconds and try again.')
   }
@@ -80,7 +118,7 @@ async function callWithRetry(promptParts, modelIdx = 0, attempt = 0) {
 
     if (msg.includes('404') || msg.includes('not found')) {
       console.warn(`Model ${modelName} not available, falling back to ${MODELS[modelIdx + 1]}`)
-      return callWithRetry(promptParts, modelIdx + 1, 0)
+      return _executeCallWithRetry(promptParts, cacheFile, modelIdx + 1, 0)
     }
 
     if (msg.includes('429') || msg.includes('quota')) {
@@ -88,14 +126,14 @@ async function callWithRetry(promptParts, modelIdx = 0, attempt = 0) {
         const delay = BASE_DELAY_MS * Math.pow(2, attempt)
         console.warn(`Rate limit on ${modelName}, retrying in ${delay}ms (Attempt ${attempt + 1}/${MAX_RETRIES})`)
         await new Promise(r => setTimeout(r, delay))
-        return callWithRetry(promptParts, modelIdx, attempt + 1)
+        return _executeCallWithRetry(promptParts, cacheFile, modelIdx, attempt + 1)
       }
       console.warn(`Exhausted retries on ${modelName}, trying ${MODELS[modelIdx + 1]}`)
-      return callWithRetry(promptParts, modelIdx + 1, 0)
+      return _executeCallWithRetry(promptParts, cacheFile, modelIdx + 1, 0)
     }
 
     console.warn(`Unknown error on ${modelName}:`, msg, 'falling back to next model')
-    return callWithRetry(promptParts, modelIdx + 1, 0)
+    return _executeCallWithRetry(promptParts, cacheFile, modelIdx + 1, 0)
   }
 }
 
@@ -163,11 +201,11 @@ ${buildEnumPromptSection()}
 
 For each attribute, return:
 - "value": chosen from the allowed list above
-- "confidence": "HIGH" | "MEDIUM" | "LOW"
+- "confidence": <integer between 0 and 100> (representing your confidence in this extraction)
 
 Return ONLY valid JSON (no markdown):
 {
-${Object.keys(ENUMS).map(k => `  "${k}": {"value": "", "confidence": ""}`).join(',\n')}
+${Object.keys(ENUMS).map(k => `  "${k}": {"value": "", "confidence": 0}`).join(',\n')}
 }`
 
 const CATALOG_PROMPT_JOINT = `You are a garment attribute extraction system for Myntra.
@@ -194,9 +232,9 @@ ALSO estimate the model's appearance (if visible):
 
 Return ONLY valid JSON:
 {
-${Object.keys(ENUMS).map(k => `  "${k}": {"value": "", "confidence": ""}`).join(',\n')},
-  "model_apparent_height": {"value": "", "confidence": ""},
-  "model_apparent_build": {"value": "", "confidence": ""}
+${Object.keys(ENUMS).map(k => `  "${k}": {"value": "", "confidence": 0}`).join(',\n')},
+  "model_apparent_height": {"value": "", "confidence": 0},
+  "model_apparent_build": {"value": "", "confidence": 0}
 }`
 
 // ─── Deterministic Comparison Engine ─────────────────────────────
@@ -706,6 +744,29 @@ export async function runClipSimilarity(anchorPath, catalogPath) {
     }
   } catch (err) {
     console.warn("Could not calculate CLIP similarity:", err.message)
+    return null
+  }
+}
+
+export async function runVitInference(imagePath) {
+  try {
+    const pythonScript = path.join(process.cwd(), 'services', 'vit_infer_cli.py')
+    const { stdout } = await execFileAsync('python', [pythonScript, imagePath], { maxBuffer: 1024 * 1024 * 10 })
+    return JSON.parse(stdout)
+  } catch (err) {
+    console.warn("ViT Inference failed:", err.message)
+    return null
+  }
+}
+
+export async function runPhashSimilarity(anchorPath, catalogPath) {
+  try {
+    const pythonScript = path.join(process.cwd(), 'services', 'phash_cli.py')
+    const { stdout } = await execFileAsync('python', [pythonScript, anchorPath, catalogPath], { maxBuffer: 1024 * 1024 * 10 })
+    const result = JSON.parse(stdout)
+    return result.success ? result : null
+  } catch (err) {
+    console.warn("pHash failed:", err.message)
     return null
   }
 }
