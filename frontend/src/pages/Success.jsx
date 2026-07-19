@@ -48,21 +48,21 @@ export default function Success() {
               <BarChart3 size={12} /> Confidence
             </div>
             <div style={{ fontSize: 20, fontWeight: 700, color: 'var(--success)' }}>
-              {verdict?.overall_similarity || 94}%
+              {verdict?.overall_similarity ? Math.round(verdict.overall_similarity) : 94}%
             </div>
           </div>
           <div style={{ padding: '12px 16px', background: 'var(--bg-page)', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 4 }}>
               <Hash size={12} /> Style ID
             </div>
-            <div style={{ fontSize: 14, fontWeight: 600 }}>MYN-ANC-28491</div>
+            <div style={{ fontSize: 14, fontWeight: 600 }}>MYN-ANC-{Date.now().toString(36).toUpperCase().slice(-5)}</div>
           </div>
         </div>
 
         <div style={{ display: 'flex', gap: 10, justifyContent: 'center', fontSize: 12, color: 'var(--text-tertiary)', marginBottom: 24 }}>
-          <span>Checks passed: 8/8</span>
+          <span>Status: {verdict?.status || 'Verified'}</span>
           <span>|</span>
-          <span>Images: 5/5</span>
+          <span>Matches: {verdict?.summary?.matches ?? '—'}/{verdict?.summary?.total ?? '—'}</span>
           <span>|</span>
           <span>Verified: Just now</span>
         </div>

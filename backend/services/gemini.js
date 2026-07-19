@@ -15,13 +15,21 @@ const MODELS = ['gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-2.0-flash-lite']
 const MAX_RETRIES = 1
 const BASE_DELAY_MS = 2000
 
-let genAI = null
+let apiKeys = []
+let currentKeyIndex = 0
+
+function getNextKey() {
+  if (apiKeys.length === 0) return process.env.GEMINI_API_KEY
+  const key = apiKeys[currentKeyIndex]
+  currentKeyIndex = (currentKeyIndex + 1) % apiKeys.length
+  return key
+}
 
 // --- SDK BUG FIX ---
 const originalFetch = global.fetch
 global.fetch = async (url, options) => {
   if (url.toString().includes('generativelanguage.googleapis.com')) {
-    const apiKey = process.env.GEMINI_API_KEY
+    const apiKey = getNextKey()
     if (apiKey && !url.toString().includes('key=')) {
       if (options?.headers) {
         delete options.headers['Authorization']
@@ -34,8 +42,14 @@ global.fetch = async (url, options) => {
   return originalFetch(url, options)
 }
 
-export function initGemini(apiKey) {
-  genAI = new GoogleGenerativeAI(apiKey)
+export function initGemini(keyStr) {
+  if (keyStr) {
+    apiKeys = keyStr.split(',').map(k => k.trim()).filter(Boolean)
+  }
+}
+
+function getGenAI() {
+  return new GoogleGenerativeAI(getNextKey() || process.env.GEMINI_API_KEY)
 }
 
 // ─── Async Queue for Rate Limit Prevention ─────────────────────
@@ -103,7 +117,8 @@ async function _executeCallWithRetry(promptParts, cacheFile, modelIdx = 0, attem
 
   const modelName = MODELS[modelIdx]
   try {
-    const model = genAI.getGenerativeModel({ 
+    const currentGenAI = getGenAI()
+    const model = currentGenAI.getGenerativeModel({ 
       model: modelName,
       generationConfig: { temperature: 0 }  // Maximum consistency
     })
@@ -145,14 +160,30 @@ function parseJSON(text) {
   return JSON.parse(cleaned)
 }
 
-function fileToInlineData(filePath) {
-  const data = fs.readFileSync(filePath)
-  const ext = path.extname(filePath).toLowerCase()
-  const mimeMap = { '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.webp': 'image/webp' }
-  return {
-    inlineData: {
-      data: data.toString('base64'),
-      mimeType: mimeMap[ext] || 'image/jpeg',
+async function fileToInlineData(filePath) {
+  try {
+    // Compress and resize the image before sending to Gemini to prevent Token Exhaustion
+    const data = await sharp(filePath)
+      .resize({ width: 800, height: 800, fit: 'inside', withoutEnlargement: true })
+      .webp({ quality: 80 })
+      .toBuffer()
+    
+    return {
+      inlineData: {
+        data: data.toString('base64'),
+        mimeType: 'image/webp',
+      }
+    }
+  } catch (err) {
+    console.warn(`[SHARP] Compression failed for ${filePath}, falling back to raw:`, err.message)
+    const data = fs.readFileSync(filePath)
+    const ext = path.extname(filePath).toLowerCase()
+    const mimeMap = { '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.webp': 'image/webp' }
+    return {
+      inlineData: {
+        data: data.toString('base64'),
+        mimeType: mimeMap[ext] || 'image/jpeg',
+      }
     }
   }
 }
@@ -295,6 +326,27 @@ const SYNONYMS = {
     opaque: ['not transparent', 'solid', 'non-transparent', 'not sheer'],
     sheer: ['transparent', 'see-through', 'translucent'],
   }
+}
+
+/**
+ * Normalize confidence from any format to "HIGH"/"MEDIUM"/"LOW" string.
+ * ViT/CLIP return floats (0-1), seller edits use strings, Gemini uses integers (0-100).
+ */
+function normalizeConfidence(conf) {
+  if (typeof conf === 'string') return conf.toUpperCase()
+  // Float 0-1 (ViT/CLIP)
+  if (typeof conf === 'number' && conf <= 1) {
+    if (conf >= 0.80) return 'HIGH'
+    if (conf >= 0.55) return 'MEDIUM'
+    return 'LOW'
+  }
+  // Integer 0-100 (Gemini)
+  if (typeof conf === 'number') {
+    if (conf >= 80) return 'HIGH'
+    if (conf >= 55) return 'MEDIUM'
+    return 'LOW'
+  }
+  return 'MEDIUM'
 }
 
 function getAttrValue(attrs, key) {
@@ -517,32 +569,91 @@ export async function getGarmentBoundingBoxRatio(imagePath) {
 
 /**
  * Generates actionable corrections for the seller based on mismatches.
+ * Uses CLIP binary cross-verification to avoid suggesting wrong corrections.
+ * 
+ * @param {Array} comparisonResult - comparison rows
+ * @param {Array} modelIssues - body proportion issues
+ * @param {string} anchorImagePath - path to anchor image for cross-verification
  */
-export function generateCorrections(comparisonResult, modelIssues = []) {
+export async function generateCorrections(comparisonResult, modelIssues = [], anchorImagePath = null) {
   const corrections = []
 
-  // Iterate over mismatches/warnings to suggest seller fixes
+  // Collect attributes that need cross-verification
+  const toVerify = comparisonResult.filter(row =>
+    (row.status === 'mismatch' || row.status === 'warning') && row.declared_value && row.anchor_value
+  )
+
+  // Batch cross-verify: ONE Python call, ONE model load, ALL checks
+  let crossVerifyResults = {}
+  if (anchorImagePath && toVerify.length > 0) {
+    console.log(`[CORRECTIONS] Cross-verifying ${toVerify.length} attributes using CLIP binary-batch...`)
+    const pairs = toVerify.map(row => ({
+      key: row.key,
+      a: row.anchor_value,
+      b: row.declared_value
+    }))
+
+    try {
+      const pythonScript = path.join(process.cwd(), 'services', 'clip_similarity_cli.py')
+      const pairsJson = JSON.stringify(pairs)
+      const { stdout } = await execFileAsync('python', [pythonScript, '--binary-batch', anchorImagePath, pairsJson], {
+        maxBuffer: 1024 * 1024 * 10,
+        timeout: 120000, // 2 minute timeout
+      })
+      const result = JSON.parse(stdout)
+      if (result.success) {
+        crossVerifyResults = result.results
+      }
+    } catch (err) {
+      console.warn('[CORRECTIONS] Batch cross-verification failed:', err.message)
+    }
+    console.log(`[CORRECTIONS] Cross-verification complete: ${Object.keys(crossVerifyResults).length} attributes checked`)
+  }
+
+  // Generate corrections only when cross-verification supports it
   comparisonResult.forEach(row => {
     if ((row.status === 'mismatch' || row.status === 'warning') && row.declared_value) {
-      // The AI detected a visual truth that conflicts with seller's input
       const visualTruth = row.anchor_value || row.catalog_value
-      if (visualTruth) {
-        corrections.push({
-          field: row.key,
-          current_value: row.declared_value,
-          suggested_value: visualTruth,
-          confidence: row.anchor_confidence || 'MEDIUM',
-          needs_review: row.needs_review || (row.anchor_confidence !== 'HIGH'),
-          reason: row.needs_review 
-            ? row.note 
-            : `Our visual analysis thinks this is "${visualTruth}" rather than "${row.declared_value}". Could you confirm? Updating this improves search accuracy.`
-        })
+      if (!visualTruth) return
+
+      const crossCheck = crossVerifyResults[row.key]
+      
+      if (crossCheck) {
+        if (crossCheck.winner === row.declared_value) {
+          // CLIP agrees with seller — seller is RIGHT, AI was wrong
+          console.log(`[CORRECTIONS] ${row.key}: Seller "${row.declared_value}" confirmed by CLIP (AI was wrong: "${visualTruth}")`)
+          return // Don't suggest a correction
+        } else if (crossCheck.winner === 'uncertain') {
+          corrections.push({
+            field: row.key,
+            current_value: row.declared_value,
+            suggested_value: visualTruth,
+            confidence: 'LOW',
+            needs_review: true,
+            cross_verified: 'uncertain',
+            reason: `Our AI and your input disagree on "${row.key}". AI detected "${visualTruth}" but you entered "${row.declared_value}". Please double-check.`
+          })
+          return
+        }
+        // CLIP agrees with AI — suggest correction
       }
+
+      corrections.push({
+        field: row.key,
+        current_value: row.declared_value,
+        suggested_value: visualTruth,
+        confidence: crossCheck ? 'HIGH' : (row.anchor_confidence || 'MEDIUM'),
+        needs_review: !crossCheck || row.anchor_confidence !== 'HIGH',
+        cross_verified: crossCheck ? 'ai_confirmed' : 'not_verified',
+        reason: crossCheck
+          ? `Our visual analysis confirms this is "${visualTruth}" rather than "${row.declared_value}" (cross-verified). Updating this improves search accuracy.`
+          : `Our visual analysis thinks this is "${visualTruth}" rather than "${row.declared_value}". Could you confirm?`
+      })
     }
   })
 
   modelIssues.forEach(issue => {
-    const match = issue.note.match(/model appears (.*)/)
+    const match = issue.note?.match(/model appears (.*)/)
     if (match) {
       corrections.push({
         field: issue.attr.toLowerCase().replace(' ', '_'),
@@ -550,7 +661,8 @@ export function generateCorrections(comparisonResult, modelIssues = []) {
         suggested_value: match[1],
         confidence: issue.confidence || 'MEDIUM',
         needs_review: issue.confidence !== 'HIGH',
-        reason: `The catalog model seems to match a "${match[1]}" profile. Could you confirm? Updating this ensures your item appears in the right fit filters.`
+        cross_verified: 'not_verified',
+        reason: `The catalog model seems to match a "${match[1]}" profile. Could you confirm?`
       })
     }
   })
@@ -560,49 +672,185 @@ export function generateCorrections(comparisonResult, modelIssues = []) {
 
 // ─── Public API Exports ─────────────────────────────────────────────
 
-export async function extractAnchorAttributes(imagePaths) {
-  const parts = [ANCHOR_PROMPT]
-  for (const p of imagePaths) { parts.push(fileToInlineData(p)) }
-  const text = await callWithRetry(parts)
-  const attrs = parseJSON(text)
+/**
+ * Run CLIP zero-shot attribute extraction locally.
+ * Returns an object like { pattern_type: { value: 'Floral', confidence: 0.87 }, ... }
+ */
+export async function runClipZeroShot(imagePath) {
+  try {
+    const pythonScript = path.join(process.cwd(), 'services', 'clip_similarity_cli.py')
+    const { stdout } = await execFileAsync('python', [pythonScript, '--zero-shot', imagePath], { maxBuffer: 1024 * 1024 * 10 })
+    const result = JSON.parse(stdout)
+    if (result.success) {
+      return result.attributes
+    } else {
+      console.warn('[CLIP-ZS] Zero-shot returned error:', result.error)
+      return null
+    }
+  } catch (err) {
+    console.warn('[CLIP-ZS] Zero-shot failed:', err.message)
+    return null
+  }
+}
 
-  // Inject the deterministic CV flat-lay length verification
-  if (imagePaths.length > 0) {
-    const cvRatio = await getGarmentBoundingBoxRatio(imagePaths[0])
-    if (cvRatio && attrs.overall_length) {
-      // DO NOT blindly overwrite the LLM. Keep it as an independent signal.
-      attrs.cv_overall_length = {
-        value: cvRatio.length_category,
-        confidence: "HIGH",
-        ratio: cvRatio.ratio
+/**
+ * Extract anchor attributes using 100% LOCAL AI.
+ * Layer 1: Custom ViT (6 core attributes)
+ * Layer 2: CLIP zero-shot (11 supplementary attributes)
+ * Layer 3: Segmentation CV (length verification)
+ * NO Gemini API calls.
+ */
+export async function extractAnchorAttributes(imagePaths) {
+  if (!imagePaths || imagePaths.length === 0) return {}
+  const primaryPath = imagePaths[0]
+
+  console.log(`[EXTRACT] Running local extraction on ${imagePaths.length} anchor images...`)
+
+  // Run ViT + CLIP zero-shot + Segmentation in parallel
+  const [vitResult, clipZsResult, cvRatio] = await Promise.all([
+    runVitInference(primaryPath),
+    runClipZeroShot(primaryPath),
+    getGarmentBoundingBoxRatio(primaryPath)
+  ])
+
+  const attrs = {}
+
+  // Layer 1: ViT predictions (6 core attributes, 89% accuracy)
+  if (vitResult) {
+    const VIT_TO_CANONICAL = {
+      garment_type: 'garment_type',
+      sleeve_length: 'sleeve_length',
+      neck_type: 'neck_type',
+      overall_length: 'overall_length',
+      fabric_type: 'fabric_appearance',
+      primary_color: 'primary_color',
+    }
+    for (const [vitKey, canonicalKey] of Object.entries(VIT_TO_CANONICAL)) {
+      if (vitResult[vitKey]) {
+        const raw = vitResult[vitKey]
+        attrs[canonicalKey] = {
+          value: raw.value,
+          confidence: normalizeConfidence(raw.confidence),
+          source: 'ViT'
+        }
       }
     }
+    console.log(`[EXTRACT-ANCHOR] ViT extracted: ${Object.keys(attrs).map(k => `${k}=${attrs[k].value}`).join(', ')}`)
+  } else {
+    console.warn('[EXTRACT-ANCHOR] ViT failed — core attributes will be missing')
   }
-  
+
+  // Layer 2: CLIP zero-shot predictions (11 supplementary attributes)
+  if (clipZsResult) {
+    let clipAdded = 0
+    for (const [key, val] of Object.entries(clipZsResult)) {
+      if (!attrs[key]) {
+        attrs[key] = {
+          value: val.value,
+          confidence: normalizeConfidence(val.confidence),
+          source: 'CLIP-ZeroShot'
+        }
+        clipAdded++
+      }
+    }
+    console.log(`[EXTRACT-ANCHOR] CLIP zero-shot added ${clipAdded} supplementary attributes`)
+  } else {
+    console.warn('[EXTRACT-ANCHOR] CLIP zero-shot failed — supplementary attributes will be missing')
+  }
+
+  // Layer 3: CV length verification (independent geometric signal)
+  if (cvRatio && attrs.overall_length) {
+    attrs.cv_overall_length = {
+      value: cvRatio.length_category,
+      confidence: 'HIGH',
+      ratio: cvRatio.ratio
+    }
+  }
+
+  console.log(`[EXTRACT] Anchor extraction complete: ${Object.keys(attrs).length} attributes (0 API calls)`)
   return attrs
 }
 
+/**
+ * Extract catalog attributes using 100% LOCAL AI.
+ * Same as anchor extraction — ViT + CLIP zero-shot.
+ * NO Gemini API calls.
+ */
 export async function extractCatalogAttributes(catalogPaths, anchorPaths = []) {
-  // JOINT PROMPTING: feed anchor images first for context, then catalog images
-  const parts = [{ text: CATALOG_PROMPT_JOINT }]
-  // Anchor images first (context)
-  for (const p of anchorPaths) { parts.push(fileToInlineData(p)) }
-  // Then catalog images (what we're extracting from)
-  for (const p of catalogPaths) { parts.push(fileToInlineData(p)) }
-  const text = await callWithRetry(parts)
-  return parseJSON(text)
-}
+  if (!catalogPaths || catalogPaths.length === 0) return {}
+  const primaryPath = catalogPaths[0]
 
-export async function verifyFabric(anchorCloseupPath, catalogPaths, declaredFabric) {
-  const parts = [`You are verifying fabric between a real product closeup and catalog images.
-Image 1: CLOSEUP of real fabric. Remaining: catalog photos.
-Declared fabric: "${declaredFabric || 'Not declared'}"
-Return ONLY valid JSON:
-{ "fabric_identifiable_in_catalog": true/false, "fabric_matches_anchor": true/false, "declared_fabric_plausible": true/false, "anchor_fabric_appearance": "", "catalog_fabric_appearance": "", "issue": "description or null", "confidence": "HIGH/MEDIUM/LOW" }`]
-  if (anchorCloseupPath) parts.push(fileToInlineData(anchorCloseupPath))
-  for (const p of catalogPaths) { parts.push(fileToInlineData(p)) }
-  const text = await callWithRetry(parts)
-  return parseJSON(text)
+  console.log(`[EXTRACT-CATALOG] Running local extraction on ${catalogPaths.length} catalog images...`)
+  console.log(`[EXTRACT-CATALOG] Primary image: ${primaryPath}`)
+
+  // Run ViT + CLIP zero-shot + segmentation in parallel
+  const [vitResult, clipZsResult, cvRatio] = await Promise.all([
+    runVitInference(primaryPath),
+    runClipZeroShot(primaryPath),
+    getGarmentBoundingBoxRatio(primaryPath),
+  ])
+
+  console.log(`[EXTRACT-CATALOG] ViT result: ${vitResult ? Object.keys(vitResult).length + ' attributes' : 'FAILED'}`)
+  console.log(`[EXTRACT-CATALOG] CLIP-ZS result: ${clipZsResult ? Object.keys(clipZsResult).length + ' attributes' : 'FAILED'}`)
+  console.log(`[EXTRACT-CATALOG] CV segmentation: ${cvRatio ? cvRatio.length_category : 'FAILED'}`)
+
+  const attrs = {}
+
+  // Layer 1: ViT predictions (6 core attributes)
+  if (vitResult) {
+    const VIT_TO_CANONICAL = {
+      garment_type: 'garment_type',
+      sleeve_length: 'sleeve_length',
+      neck_type: 'neck_type',
+      overall_length: 'overall_length',
+      fabric_type: 'fabric_appearance',
+      primary_color: 'primary_color',
+    }
+    for (const [vitKey, canonicalKey] of Object.entries(VIT_TO_CANONICAL)) {
+      if (vitResult[vitKey]) {
+        const raw = vitResult[vitKey]
+        attrs[canonicalKey] = {
+          value: raw.value,
+          confidence: normalizeConfidence(raw.confidence),
+          source: 'ViT'
+        }
+      }
+    }
+    console.log(`[EXTRACT-CATALOG] ViT extracted: ${Object.keys(attrs).map(k => `${k}=${attrs[k].value}`).join(', ')}`)
+  } else {
+    console.warn('[EXTRACT-CATALOG] ViT FAILED — check if model_best.safetensors exists and Python environment has timm+torch')
+  }
+
+  // Layer 2: CLIP zero-shot predictions (supplementary)
+  if (clipZsResult) {
+    let clipAdded = 0
+    for (const [key, val] of Object.entries(clipZsResult)) {
+      if (!attrs[key]) {
+        attrs[key] = {
+          value: val.value,
+          confidence: normalizeConfidence(val.confidence),
+          source: 'CLIP-ZeroShot'
+        }
+        clipAdded++
+      }
+    }
+    console.log(`[EXTRACT-CATALOG] CLIP zero-shot added ${clipAdded} supplementary attributes`)
+  } else {
+    console.warn('[EXTRACT-CATALOG] CLIP zero-shot FAILED — check if open_clip is installed')
+  }
+
+  // Layer 3: CV length verification on catalog too
+  if (cvRatio) {
+    attrs.cv_overall_length = {
+      value: cvRatio.length_category,
+      confidence: 'HIGH',
+      ratio: cvRatio.ratio,
+      source: 'CV-Segmentation'
+    }
+  }
+
+  console.log(`[EXTRACT-CATALOG] Catalog extraction complete: ${Object.keys(attrs).length} attributes (0 API calls)`)
+  return attrs
 }
 
 export function checkModelProportions(catalogAttrs, declaredHeight, declaredSize) {
@@ -643,7 +891,23 @@ export function checkModelProportions(catalogAttrs, declaredHeight, declaredSize
 }
 
 export async function generateListingMetadata(imagePaths, attributes) {
-  const promptText = `You are a Myntra listing generator. Generate a complete product listing based on these verified attributes: ${JSON.stringify(attributes)}.
+  // ── Tier 1: Try Groq (text-only, fastest, most reliable) ──
+  try {
+    const { isGroqAvailable, groqGenerateListingMetadata } = await import('./groq.js')
+    if (isGroqAvailable()) {
+      console.log('[GENERATE] Using Groq (text-only) for listing metadata...')
+      const result = await groqGenerateListingMetadata(attributes)
+      if (result && result.title) return result
+    }
+  } catch (groqErr) {
+    console.warn('[GENERATE] Groq failed:', groqErr.message)
+  }
+
+  // ── Tier 2: Try Gemini text-only (no images!) ──
+  try {
+    if (apiKeys.length > 0) {
+      console.log('[GENERATE] Falling back to Gemini (text-only) for listing metadata...')
+      const promptText = `You are a Myntra listing generator. Generate a complete product listing based on these verified attributes: ${JSON.stringify(attributes)}.
 
 Return ONLY valid JSON with these exact keys:
 {
@@ -658,31 +922,215 @@ Return ONLY valid JSON with these exact keys:
   "care_instructions": "Wash care instructions",
   "size_fit_note": "Size and fit note for the buyer"
 }`
-  
-  const parts = [{ text: promptText }]
-  if (imagePaths && imagePaths.length > 0) {
-    parts.push(fileToInlineData(imagePaths[0]))
+      // TEXT ONLY — no images sent to Gemini
+      const text = await callWithRetry([{ text: promptText }])
+      return parseJSON(text)
+    }
+  } catch (geminiErr) {
+    console.warn('[GENERATE] Gemini text-only also failed:', geminiErr.message)
   }
-  
-  const text = await callWithRetry(parts)
-  return parseJSON(text)
+
+  // ── Tier 3: Deterministic template (zero API calls, always works) ──
+  console.log('[GENERATE] Using deterministic template (no API available)')
+  const gt = attributes.garment_type?.value || attributes.garment_type || 'Garment'
+  const color = attributes.primary_color?.value || attributes.primary_color || ''
+  const fabric = attributes.fabric_appearance?.value || attributes.fabric || ''
+  const neck = attributes.neck_type?.value || attributes.neck_type || ''
+  const sleeve = attributes.sleeve_length?.value || attributes.sleeve_length || ''
+  const pattern = attributes.pattern_type?.value || attributes.pattern_type || 'Solid'
+
+  return {
+    title: `${color} ${pattern} ${fabric} ${gt} for Women`.replace(/\s+/g, ' ').trim().substring(0, 60),
+    description: `A stylish ${color.toLowerCase()} ${gt.toLowerCase()} crafted from ${fabric.toLowerCase() || 'premium'} fabric. Features a ${neck.toLowerCase() || 'classic'} neckline with ${sleeve.toLowerCase() || 'regular'} sleeves. Perfect for casual and semi-formal occasions.`,
+    bullets: [
+      `Material: ${fabric || 'Premium fabric'}`,
+      `Pattern: ${pattern}`,
+      `Neck: ${neck || 'Classic neckline'}`,
+    ],
+    key_features: [
+      `${fabric || 'Quality'} fabric for comfort`,
+      `${pattern} pattern design`,
+      `${neck || 'Stylish'} neckline`,
+      `${sleeve || 'Regular'} sleeves`,
+    ],
+    tags: [gt.toLowerCase(), color.toLowerCase(), fabric.toLowerCase(), pattern.toLowerCase(), 'women'].filter(Boolean),
+    category_path: `Women > Clothing > ${gt}`,
+    ideal_for: 'Women',
+    fabric_details: fabric || 'Not specified',
+    care_instructions: 'Machine wash cold. Do not bleach. Tumble dry low.',
+    size_fit_note: 'Regular fit. Refer to size chart for accurate measurements.',
+  }
 }
 
+/**
+ * Generate 5 AI catalog model images using Gemini image generation.
+ * Each image shows the garment on an AI model with proper proportions.
+ * Falls back to compositing if Gemini image gen is unavailable.
+ */
 export async function generateCatalogImage(imagePaths, attributes, cvOverallLength) {
-  // Real compositing: segment the garment and place it on a clean e-commerce background.
   if (!imagePaths || imagePaths.length === 0) return null
   
   const anchorPath = imagePaths[0]
   const parsedPath = path.parse(anchorPath)
+  
+  // Build garment description from ALL extracted attributes
+  const gt = attributes.garment_type?.value || attributes.garment_type || 'garment'
+  const color = attributes.primary_color?.value || attributes.primary_color || ''
+  const secColor = attributes.secondary_color?.value || attributes.secondary_color || ''
+  const fabric = attributes.fabric_appearance?.value || attributes.fabric || ''
+  const pattern = attributes.pattern_type?.value || attributes.pattern_type || 'Solid'
+  const neck = attributes.neck_type?.value || attributes.neck_type || ''
+  const sleeve = attributes.sleeve_length?.value || attributes.sleeve_length || ''
+  const fit = attributes.fit?.value || attributes.fit || 'Regular'
+  const silhouette = attributes.silhouette?.value || attributes.silhouette || ''
+  const embellishment = attributes.embellishment?.value || attributes.embellishment || 'None'
+  const hemline = attributes.hemline?.value || attributes.hemline || ''
+  const length = attributes.overall_length?.value || attributes.overall_length || ''
+  const occasion = attributes.occasion_style?.value || attributes.occasion_style || ''
+  const motif = attributes.motif_description?.value || attributes.motif_description || ''
+  const modelHeight = attributes.model_height || '5\'7"'
+  const modelSize = attributes.model_size || 'M'
+
+  const garmentDesc = [
+    color && `${color} colored`,
+    secColor && secColor !== 'None' && `with ${secColor} accents`,
+    pattern !== 'Solid' && `${pattern} pattern`,
+    fabric && `${fabric} fabric`,
+    gt,
+    fit !== 'Regular' && `(${fit} fit)`,
+    silhouette && `with ${silhouette} silhouette`,
+    neck && `featuring ${neck} neckline`,
+    sleeve && `${sleeve} sleeves`,
+    length && `${length}`,
+    hemline && hemline !== 'None' && `${hemline} hemline`,
+    embellishment && embellishment !== 'None' && `with ${embellishment}`,
+    motif && motif !== 'None' && `${motif} motif`,
+  ].filter(Boolean).join(', ')
+
+  // Size to body description mapping
+  const sizeToBody = {
+    'XS': 'petite, slim build',
+    'S': 'slim, lean build',
+    'M': 'average, regular build',
+    'L': 'slightly curvy, regular-to-full build',
+    'XL': 'full-figured, curvy build',
+    'XXL': 'plus-size, full-figured build',
+  }
+  const bodyDesc = sizeToBody[modelSize?.toUpperCase()] || 'average build'
+
+  const VIEWS = [
+    {
+      name: 'front',
+      prompt: `Professional Myntra e-commerce catalog photo. An Indian female fashion model (height ${modelHeight}, ${bodyDesc}, size ${modelSize}) wearing: ${garmentDesc}. FRONT VIEW, full body from head to toe. The garment MUST show: ${fit} fit draping naturally on the body, ${length} length visible. White studio background, soft professional lighting, model standing straight facing camera. Photo-realistic, high resolution, e-commerce product photography style.`
+    },
+    {
+      name: 'back',
+      prompt: `Professional Myntra e-commerce catalog photo. Same Indian female model (height ${modelHeight}, ${bodyDesc}) wearing the exact same garment: ${garmentDesc}. BACK VIEW, full body. Show the back design, any back prints or patterns, and how the garment falls from behind. White studio background, professional lighting.`
+    },
+    {
+      name: 'side',
+      prompt: `Professional Myntra e-commerce catalog photo. Same Indian female model (height ${modelHeight}, ${bodyDesc}) wearing: ${garmentDesc}. SIDE PROFILE VIEW showing the garment's silhouette and how it drapes on the body. Show the ${fit} fit and ${length} clearly. White studio background, professional lighting.`
+    },
+    {
+      name: 'closeup',
+      prompt: `Close-up detail shot of the garment: ${garmentDesc}. Focus on the ${neck} neckline area and ${fabric} fabric texture. Show ${embellishment !== 'None' ? embellishment : 'stitching details'}. On the same Indian model. White background, macro-style e-commerce photography, sharp focus on fabric weave and construction details.`
+    },
+    {
+      name: 'full',
+      prompt: `Full-length editorial style Myntra catalog photo. Indian female model (${modelHeight}, ${bodyDesc}, size ${modelSize}) wearing: ${garmentDesc}. Styled for ${occasion || 'casual'} wear. Show the complete garment from a slightly angled perspective. Model in a natural, confident pose. White studio background, professional editorial lighting.`
+    },
+  ]
+
+  const generatedImages = []
+
+  // Try Gemini image generation first
+  if (apiKeys.length > 0) {
+    console.log(`[IMAGE-GEN] Generating 5 AI model catalog images via Gemini...`)
+    
+    for (let i = 0; i < VIEWS.length; i++) {
+      const view = VIEWS[i]
+      const outputFile = path.join(process.cwd(), 'uploads', `gen_${parsedPath.name}_${view.name}.png`)
+      
+      // Check cache
+      if (fs.existsSync(outputFile)) {
+        console.log(`[IMAGE-GEN] Using cached ${view.name} view`)
+        generatedImages.push({
+          view: view.name,
+          url: `http://localhost:3001/uploads/gen_${parsedPath.name}_${view.name}.png`
+        })
+        continue
+      }
+
+      try {
+        const genAI = getGenAI()
+        const model = genAI.getGenerativeModel({
+          model: 'gemini-2.0-flash-preview-image-generation',
+          generationConfig: {
+            responseModalities: ['TEXT', 'IMAGE'],
+          },
+        })
+
+        // Send anchor image as reference + mega-prompt
+        const anchorInlineData = await fileToInlineData(anchorPath)
+        const result = await model.generateContent([
+          anchorInlineData,
+          { text: `Using the garment shown in the reference image above, ${view.prompt}` },
+        ])
+
+        const response = result.response
+        let imageGenerated = false
+
+        // Extract generated image from response
+        if (response.candidates?.[0]?.content?.parts) {
+          for (const part of response.candidates[0].content.parts) {
+            if (part.inlineData) {
+              const imgBuffer = Buffer.from(part.inlineData.data, 'base64')
+              fs.writeFileSync(outputFile, imgBuffer)
+              generatedImages.push({
+                view: view.name,
+                url: `http://localhost:3001/uploads/gen_${parsedPath.name}_${view.name}.png`
+              })
+              imageGenerated = true
+              console.log(`[IMAGE-GEN] ✅ ${view.name} view generated`)
+              break
+            }
+          }
+        }
+
+        if (!imageGenerated) {
+          console.warn(`[IMAGE-GEN] ${view.name} view: no image in response`)
+        }
+
+        // Rate limit prevention: 10 second delay between generations
+        if (i < VIEWS.length - 1) {
+          await new Promise(resolve => setTimeout(resolve, 10000))
+        }
+      } catch (err) {
+        console.warn(`[IMAGE-GEN] ${view.name} view failed: ${err.message}`)
+        // If rate limited, stop trying more views
+        if (err.message?.includes('429') || err.message?.includes('RESOURCE_EXHAUSTED')) {
+          console.warn('[IMAGE-GEN] Rate limited — stopping image generation')
+          break
+        }
+      }
+    }
+  }
+
+  // If Gemini generated at least some images, return them
+  if (generatedImages.length > 0) {
+    console.log(`[IMAGE-GEN] Generated ${generatedImages.length}/5 AI model images`)
+    return generatedImages
+  }
+
+  // Fallback: compositing (garment on white canvas)
+  console.log('[IMAGE-GEN] Falling back to compositing (no AI model images)')
   const outputPath = path.join(process.cwd(), 'uploads', `gen_${parsedPath.name}.png`)
   
   try {
-    // Step 1: Get segmented cutout (real garment, no background)
     let sourceBuffer
     if (cvOverallLength && cvOverallLength.cutout_path && fs.existsSync(cvOverallLength.cutout_path)) {
       sourceBuffer = fs.readFileSync(cvOverallLength.cutout_path)
     } else {
-      // Try to segment on the fly
       try {
         const pythonScript = path.join(process.cwd(), 'services', 'segmentation_cli.py')
         const { stdout } = await execFileAsync('python', [pythonScript, anchorPath], { maxBuffer: 1024 * 1024 * 10 })
@@ -697,20 +1145,17 @@ export async function generateCatalogImage(imagePaths, attributes, cvOverallLeng
       }
     }
     
-    // Step 2: Resize the garment to fit within the canvas, preserving aspect ratio
     const resizedGarment = await sharp(sourceBuffer)
       .resize(500, 700, { fit: 'inside', withoutEnlargement: false })
       .png()
       .toBuffer()
     
-    // Step 3: Create a clean white canvas and composite the garment centered on it
     const garmentMeta = await sharp(resizedGarment).metadata()
     const canvasW = 600
     const canvasH = 800
     const left = Math.round((canvasW - garmentMeta.width) / 2)
     const top = Math.round((canvasH - garmentMeta.height) / 2)
     
-    // Create SVG border that matches the canvas exactly
     const borderSvg = `<svg width="${canvasW}" height="${canvasH}"><rect x="4" y="4" width="${canvasW - 8}" height="${canvasH - 8}" fill="none" stroke="#e0e0e0" stroke-width="2" rx="8"/></svg>`
     
     await sharp({

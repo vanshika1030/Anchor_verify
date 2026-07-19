@@ -5,6 +5,7 @@ import multer from 'multer'
 import path from 'path'
 import { fileURLToPath } from 'url'
 import { initGemini } from './services/gemini.js'
+import { initGroq } from './services/groq.js'
 import extractRoutes from './routes/extract.js'
 import verifyRoutes from './routes/verify.js'
 import csvRoutes from './routes/csv.js'
@@ -13,13 +14,23 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const app = express()
 const PORT = process.env.PORT || 3001
 
-// 🚀 Init LLM (Gemini)
-if (!process.env.GEMINI_API_KEY) {
-  console.error('GEMINI_API_KEY not set in .env')
-  process.exit(1)
+// 🚀 Init LLMs (both OPTIONAL — only used for text generation in Layer 5)
+if (process.env.GROQ_API_KEY) {
+  initGroq(process.env.GROQ_API_KEY)
+  console.log('✅ Groq initialized (primary text generation via llama-3.3-70b)')
+} else {
+  console.warn('⚠️  GROQ_API_KEY not set — Groq will not be available')
 }
-initGemini(process.env.GEMINI_API_KEY)
-console.log('Gemini initialized successfully')
+
+if (process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY.trim()) {
+  initGemini(process.env.GEMINI_API_KEY)
+  console.log('✅ Gemini initialized (text-only fallback for listing generation)')
+} else {
+  console.warn('⚠️  GEMINI_API_KEY not set — Gemini will not be available')
+}
+
+console.log('✅ Local AI models: ViT (6 attributes, 89% acc) + CLIP (zero-shot) + pHash + Segmentation')
+console.log('📦 Architecture: 5-Layer Hierarchical — ZERO API calls for verification')
 
 // ─── Middleware ──────────────────────────────────────────────────────
 app.use(cors({ origin: 'http://localhost:5173', credentials: true }))
@@ -47,7 +58,18 @@ const upload = multer({
 
 // Health check
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', engine: 'gemini', model: 'gemini-2.0-flash', architecture: 'multi-layer-ensemble' })
+  res.json({
+    status: 'ok',
+    architecture: '5-layer-hierarchical',
+    layers: {
+      'Layer 1': 'CLIP + pHash (local visual gate)',
+      'Layer 2': 'ViT + CLIP zero-shot (local attribute extraction)',
+      'Layer 3': 'Deterministic comparison (synonym matching)',
+      'Layer 4': 'Bayesian mathematical fusion',
+      'Layer 5': 'Text-only LLM (Groq → Gemini → template)',
+    },
+    api_calls_for_verify: 0,
+  })
 })
 
 // Extract routes — accepts multiple images

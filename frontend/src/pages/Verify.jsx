@@ -15,7 +15,8 @@ const ATTR_LABELS = {
   embellishment: 'Embellishment', transparency: 'Transparency', hemline: 'Hemline',
   occasion_style: 'Occasion / style', motif_description: 'Motif / print', closure_type: 'Closure',
   structural_features: 'Features', model_apparent_height: 'Model height (detected)',
-  model_apparent_build: 'Model build (detected)',
+  model_apparent_build: 'Model build (detected)', model_build: 'Model build (CLIP)',
+  model_height_range: 'Model height (CLIP)', cv_overall_length: 'Length (geometric)',
 }
 
 export default function Verify() {
@@ -39,6 +40,7 @@ export default function Verify() {
   const [expandedRow, setExpandedRow] = useState(null)
   const [generatedMetadata, setGeneratedMetadata] = useState(null)
   const [corrections, setCorrections] = useState(null)
+  const [actualMode, setActualMode] = useState(mode)
   
   // Simulated checklist progress
   const [checklistStep, setChecklistStep] = useState(0)
@@ -51,11 +53,14 @@ export default function Verify() {
     }
   }, [])
 
+  const hasRun = useRef(false)
   useEffect(() => {
     if (comparisonResult && verdict) {
       setLoading(false)
       return
     }
+    if (hasRun.current) return
+    hasRun.current = true
     doVerification()
   }, [])
 
@@ -93,6 +98,7 @@ export default function Verify() {
       setVerdict(result.verdict || { status: 'PASS', reason: 'Completed', critical_issues: [] })
       if (result.generatedMetadata) setGeneratedMetadata(result.generatedMetadata)
       if (result.corrections) setCorrections(result.corrections)
+      if (result.mode) setActualMode(result.mode)
       
       setChecklistStep(4) // All done
 
@@ -132,7 +138,7 @@ export default function Verify() {
         <Stepper steps={FLOW} current={2} />
         <div className="card" style={{ padding: '48px 32px' }}>
           <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 24 }}>
-            {mode === 'generate' ? 'Generating your listing' : 'Multi-Layered Verification Running...'}
+            {actualMode === 'generate' ? 'Generating your listing' : 'Multi-Layered Verification Running...'}
           </div>
           
           <div style={{ textAlign: 'left', background: '#f8f9fa', padding: 24, borderRadius: 8, fontSize: 14, color: 'var(--text-secondary)' }}>
@@ -208,7 +214,7 @@ export default function Verify() {
             {v.status === 'FAIL' ? 'Fix the issues below before publishing' :
              v.status === 'WARNING' ? 'Review warnings below. You can still publish.' :
              v.status === 'UNVERIFIED' ? 'Verification could not complete. Please retry or check your setup.' :
-             mode === 'generate' ? 'Your listing metadata is ready to publish.' :
+             actualMode === 'generate' ? 'Your listing metadata is ready to publish.' :
              'Your listing is ready to publish.'}
           </div>
         </div>
@@ -227,7 +233,7 @@ export default function Verify() {
             <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--accent)' }}>AI Correction Co-Pilot</div>
           </div>
           <div style={{ fontSize: 14, color: 'var(--text-secondary)', marginBottom: 16 }}>
-            We noticed some discrepancies between your inputs and our visual analysis. Applying these fixes will improve your listing's search ranking and reduce returns.
+            We noticed some discrepancies between your inputs and our visual analysis. Items marked <strong style={{color:'var(--success)'}}>✓ Verified</strong> have been cross-checked against your anchor image.
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
             {corrections.map((c, i) => (
@@ -240,8 +246,11 @@ export default function Verify() {
                   <ArrowRight size={14} color="var(--text-secondary)" />
                   <div style={{ fontWeight: 600, color: 'var(--success)', fontSize: 14 }}>{c.suggested_value}</div>
                 </div>
-                <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
-                  {c.reason}
+                <div style={{ fontSize: 12, color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: 6 }}>
+                  {c.cross_verified === 'ai_confirmed' && <span style={{ color: 'var(--success)', fontWeight: 600, fontSize: 11 }}>✓ Cross-verified</span>}
+                  {c.cross_verified === 'uncertain' && <span style={{ color: 'var(--warning)', fontWeight: 600, fontSize: 11 }}>⚠ Needs review</span>}
+                  {c.cross_verified === 'not_verified' && <span style={{ color: 'var(--text-secondary)', fontSize: 11 }}>◯ Unchecked</span>}
+                  <span style={{ marginLeft: 4 }}>{c.reason}</span>
                 </div>
                 <div style={{ marginTop: 10, display: 'flex', gap: 8 }}>
                   <button className="btn btn-primary" style={{ padding: '6px 12px', fontSize: 12 }} onClick={() => {
@@ -270,15 +279,34 @@ export default function Verify() {
             </div>
           </div>
 
-          {generatedMetadata.generated_image_url && (
+          {/* Multiple AI model images (5 views) */}
+          {Array.isArray(generatedMetadata.generated_image_url) && generatedMetadata.generated_image_url.length > 0 ? (
+            <div style={{ marginBottom: 20 }}>
+              <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8, color: 'var(--text-secondary)' }}>
+                🧑‍🎨 AI Model Catalog ({generatedMetadata.generated_image_url.length} views)
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 10 }}>
+                {generatedMetadata.generated_image_url.map((img, i) => (
+                  <div key={i} style={{ background: '#f5f5f5', borderRadius: 8, padding: 6, textAlign: 'center' }}>
+                    <img 
+                      src={img.url || img} 
+                      alt={img.view ? `${img.view} view` : `View ${i + 1}`}
+                      style={{ width: '100%', height: 'auto', borderRadius: 6, aspectRatio: '3/4', objectFit: 'cover' }} 
+                    />
+                    {img.view && <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 4, textTransform: 'capitalize' }}>{img.view} view</div>}
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : generatedMetadata.generated_image_url && typeof generatedMetadata.generated_image_url === 'string' ? (
             <div style={{ marginBottom: 20, textAlign: 'center', background: '#f5f5f5', borderRadius: 8, padding: 8 }}>
               <img 
                 src={generatedMetadata.generated_image_url} 
-                alt="Generated AI Model" 
+                alt="Generated AI Catalog" 
                 style={{ width: '100%', maxWidth: '300px', height: 'auto', borderRadius: 6 }} 
               />
             </div>
-          )}
+          ) : null}
 
           <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 8, lineHeight: 1.4 }}>
             {generatedMetadata.title}
@@ -366,9 +394,9 @@ export default function Verify() {
 
         <div className="card" style={{ marginBottom: 0 }}>
           <div className="img-card-label">
-            {mode === 'generate' ? 'Anchor (back view)' : 'Catalog image'}
+            {actualMode === 'generate' ? 'Anchor (back view)' : 'Catalog image'}
           </div>
-          {mode === 'generate' ? (
+          {actualMode === 'generate' ? (
             anchorBack?.preview ? (
               <img src={anchorBack.preview} alt="Anchor Back" style={{ aspectRatio: '3/4', objectFit: 'cover', maxHeight: 360 }} />
             ) : (
@@ -418,6 +446,23 @@ export default function Verify() {
         </div>
       )}
 
+      {/* Bayesian Fusion Probabilities */}
+      {v.fusionResult && (
+        <div className="card" style={{ borderLeft: `3px solid ${v.fusionResult.probability > 75 ? 'var(--success)' : 'var(--warning)'}` }}>
+          <div className="card-title" style={{ fontSize: 14, color: v.fusionResult.probability > 75 ? 'var(--success)' : 'var(--warning)', display: 'flex', alignItems: 'center', gap: 6 }}>
+            <div style={{ padding: '2px 6px', background: 'rgba(0,0,0,0.05)', borderRadius: 4, fontSize: 11, fontWeight: 700 }}>AI MATH FUSION</div>
+            Overall Match Probability: {v.fusionResult.probability}%
+          </div>
+          <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+            <strong>Bayesian Evidence Update:</strong><br />
+            Prior: {(v.fusionResult.breakdown.prior * 100).toFixed(0)}% 
+            → CLIP (LR: {v.fusionResult.breakdown.lr_clip != null ? v.fusionResult.breakdown.lr_clip.toFixed(2) : 'N/A'}) 
+            → pHash (LR: {v.fusionResult.breakdown.lr_phash != null ? v.fusionResult.breakdown.lr_phash.toFixed(2) : 'N/A'}) 
+            → Attributes (LR: {v.fusionResult.breakdown.lr_attributes != null ? v.fusionResult.breakdown.lr_attributes.toFixed(2) : 'N/A'})
+          </div>
+        </div>
+      )}
+
       {/* Attribute comparison table */}
       <div className="card">
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
@@ -431,7 +476,7 @@ export default function Verify() {
             <tr>
               <th>Attribute</th>
               <th>Anchor (detected)</th>
-              <th>{mode === 'generate' ? 'Self-check' : 'Catalog (detected)'}</th>
+              <th>{actualMode === 'generate' ? 'Self-check' : 'Catalog (detected)'}</th>
               <th>Seller (declared)</th>
               <th style={{ width: 130 }}>Status</th>
             </tr>
@@ -501,9 +546,17 @@ export default function Verify() {
               {fabricResult.issue ? fabricResult.issue : 'Fabric appearance is consistent between anchor and catalog'}
             </div>
           ) : (
-            <div style={{ color: 'var(--danger)', fontSize: 13, lineHeight: 1.6 }}>
-              <XCircle size={14} style={{ verticalAlign: -2, marginRight: 4 }} />
-              {fabricResult.issue || 'Fabric appearance differs between anchor and catalog'}
+            <div>
+              <div style={{ color: 'var(--danger)', fontSize: 13, lineHeight: 1.6 }}>
+                <XCircle size={14} style={{ verticalAlign: -2, marginRight: 4 }} />
+                {fabricResult.issue || 'Fabric appearance differs between anchor and catalog'}
+              </div>
+              {fabricResult.needs_fabric_image && (
+                <div style={{ marginTop: 8, padding: '8px 12px', background: 'var(--bg-highlight)', borderRadius: 6, border: '1px solid var(--warning)', fontSize: 12, color: 'var(--warning)' }}>
+                  <AlertTriangle size={14} style={{ verticalAlign: -2, marginRight: 4 }} />
+                  <strong>Mandatory:</strong> Please upload a clear fabric closeup image to verify fabric consistency.
+                </div>
+              )}
             </div>
           )}
         </div>
