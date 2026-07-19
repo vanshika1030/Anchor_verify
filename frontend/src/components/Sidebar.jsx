@@ -1,10 +1,11 @@
 import { useLocation, useNavigate } from 'react-router-dom'
 import { LayoutDashboard, Package, PlusCircle, BarChart3, CreditCard, Settings, ShieldCheck } from 'lucide-react'
+import { useApp } from '../AppContext'
 
 const NAV = [
-  { icon: LayoutDashboard, label: 'Dashboard', path: null },
+  { icon: LayoutDashboard, label: 'Dashboard', path: '/dashboard' },
   { icon: Package, label: 'My Listings', path: null },
-  { icon: PlusCircle, label: 'Add New Listing', path: '/new-listing/upload' },
+  { icon: PlusCircle, label: 'Add New Listing', path: '/new-listing' },
   { icon: BarChart3, label: 'Analytics', path: null },
   { icon: CreditCard, label: 'Payments', path: null },
   { icon: Settings, label: 'Settings', path: null },
@@ -13,6 +14,7 @@ const NAV = [
 export default function Sidebar() {
   const loc = useLocation()
   const nav = useNavigate()
+  const { seller } = useApp()
   const isNew = loc.pathname.startsWith('/new-listing')
 
   return (
@@ -25,7 +27,7 @@ export default function Sidebar() {
       <nav className="sidebar-nav">
         {NAV.map(item => {
           const Icon = item.icon
-          const active = item.path && (item.path === '/new-listing/upload' ? isNew : loc.pathname === item.path)
+          const active = item.path && (item.path === '/new-listing' ? isNew : loc.pathname === item.path)
           return (
             <div
               key={item.label}
@@ -41,8 +43,8 @@ export default function Sidebar() {
         <div className="nav-section">Quality tools</div>
 
         <div
-          className={`nav-link ${loc.pathname === '/' ? 'active' : ''}`}
-          onClick={() => nav('/')}
+          className={`nav-link ${loc.pathname === '/verify' ? 'active' : ''}`}
+          onClick={() => nav('/verify')}
         >
           <ShieldCheck className="icon" size={16} />
           Anchor Verification
@@ -51,9 +53,9 @@ export default function Sidebar() {
       </nav>
 
       <div className="sidebar-footer">
-        <div className="sidebar-avatar">SK</div>
+        <div className="sidebar-avatar">{seller?.business_name?.substring(0, 2).toUpperCase() || 'SK'}</div>
         <div>
-          <div className="sidebar-user-name">StyleKraft</div>
+          <div className="sidebar-user-name">{seller?.business_name || 'StyleKraft'}</div>
           <div className="sidebar-user-role">Seller account</div>
         </div>
       </div>

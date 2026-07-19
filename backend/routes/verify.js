@@ -141,12 +141,18 @@ router.post('/', async (req, res) => {
 
     // ══════════════════════════════════════════════════════════════════
     // LAYER 3: DETERMINISTIC COMPARISON (Synonym Matching)
+    // In generate mode: compare anchor-extracted vs seller-declared
+    // In verify mode: compare anchor-extracted vs catalog-extracted vs seller-declared
     // ══════════════════════════════════════════════════════════════════
     console.log(`[LAYER 3] Deterministic comparison with synonym matching...`)
+    
+    // In generate mode, use anchor attributes as both anchor AND catalog
+    // (since there are no catalog images, anchor IS the source)
+    const comparisonCatalog = isGenerateMode ? parsedAnchor : catalogAttrs
     const comparison = compareAttributesDeterministic(
-      parsedAnchor,   // anchor attributes (extracted on Upload page via local AI)
-      catalogAttrs,    // catalog attributes (just extracted locally above)
-      parsedDeclared,  // seller declarations (from Details page)
+      parsedAnchor,        // anchor attributes (extracted on Upload page via local AI)
+      comparisonCatalog,   // catalog attributes (or anchor again in generate mode)
+      parsedDeclared,      // seller declarations (from Details page)
     )
 
     // ── Layer 3.5: Fabric verification (CLIP closeup comparison) ─────

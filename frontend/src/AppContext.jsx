@@ -53,8 +53,41 @@ export function AppProvider({ children }) {
     anchorCloseup?.preview,
   ].filter(Boolean)
 
+  // Auth State
+  const [isAuthenticated, setIsAuthenticated] = useState(!!localStorage.getItem('token'))
+  const [seller, setSeller] = useState(() => {
+    try {
+      const token = localStorage.getItem('token');
+      if (token) return JSON.parse(atob(token.split('.')[1]));
+      return null;
+    } catch {
+      return null;
+    }
+  })
+  
+  // Category State
+  const [selectedCategory, setSelectedCategory] = useState('')
+
+  const login = (token) => {
+    localStorage.setItem('token', token)
+    setIsAuthenticated(true)
+    try {
+      setSeller(JSON.parse(atob(token.split('.')[1])))
+    } catch {
+      setSeller(null)
+    }
+  }
+
+  const logout = () => {
+    localStorage.removeItem('token')
+    setIsAuthenticated(false)
+    setSeller(null)
+  }
+
   return (
     <AppCtx.Provider value={{
+      isAuthenticated, login, logout, seller,
+      selectedCategory, setSelectedCategory,
       anchorFront, setAnchorFront,
       anchorBack, setAnchorBack,
       anchorCloseup, setAnchorCloseup,

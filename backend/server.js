@@ -9,10 +9,16 @@ import { initGroq } from './services/groq.js'
 import extractRoutes from './routes/extract.js'
 import verifyRoutes from './routes/verify.js'
 import csvRoutes from './routes/csv.js'
+import authRoutes from './routes/auth.js'
+import productRoutes from './routes/products.js'
+import sizechartRoutes from './routes/sizechart.js'
+import { initDB } from './services/database.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const app = express()
 const PORT = process.env.PORT || 3001
+
+initDB()
 
 // 🚀 Init LLMs (both OPTIONAL — only used for text generation in Layer 5)
 if (process.env.GROQ_API_KEY) {
@@ -23,7 +29,7 @@ if (process.env.GROQ_API_KEY) {
 }
 
 if (process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY.trim()) {
-  initGemini(process.env.GEMINI_API_KEY)
+  initGemini(process.env.GEMINI_API_KEY.trim())
   console.log('✅ Gemini initialized (text-only fallback for listing generation)')
 } else {
   console.warn('⚠️  GEMINI_API_KEY not set — Gemini will not be available')
@@ -49,8 +55,9 @@ const upload = multer({
   storage,
   limits: { fileSize: 15 * 1024 * 1024 }, // 15MB per file
   fileFilter: (req, file, cb) => {
-    const allowed = ['image/jpeg', 'image/png', 'image/webp']
-    cb(null, allowed.includes(file.mimetype))
+    const allowed = ['image/jpeg', 'image/png', 'image/webp', 'text/csv', 'application/pdf', 'application/vnd.ms-excel']
+    if (file.originalname.endsWith('.csv')) allowed.push(file.mimetype)
+    cb(null, allowed.includes(file.mimetype) || file.originalname.endsWith('.csv'))
   },
 })
 
@@ -72,6 +79,9 @@ app.get('/api/health', (req, res) => {
   })
 })
 
+// Auth routes
+app.use('/api/auth', authRoutes)
+
 // Extract routes — accepts multiple images
 app.use('/api/extract', upload.array('images', 6), extractRoutes)
 
@@ -80,6 +90,12 @@ app.use('/api/verify', upload.any(), verifyRoutes)
 
 // CSV routes
 app.use('/api/csv', csvRoutes)
+
+// Products routes
+app.use('/api/products', productRoutes)
+
+// Size chart routes
+app.use('/api/sizechart', upload.single('file'), sizechartRoutes)
 
 // ─── Error handler ───────────────────────────────────────────────────
 app.use((err, req, res, next) => {

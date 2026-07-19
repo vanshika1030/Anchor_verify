@@ -1,4 +1,5 @@
 import { GoogleGenerativeAI } from '@google/generative-ai'
+import { GoogleGenAI } from '@google/genai'
 import fs from 'fs'
 import path from 'path'
 import sharp from 'sharp'
@@ -45,10 +46,11 @@ global.fetch = async (url, options) => {
 export function initGemini(keyStr) {
   if (keyStr) {
     apiKeys = keyStr.split(',').map(k => k.trim()).filter(Boolean)
+    console.log(`[GEMINI] Initialized with ${apiKeys.length} API key(s), first key starts: ${apiKeys[0]?.substring(0,8)}...`)
   }
 }
 
-function getGenAI() {
+export function getGenAI() {
   return new GoogleGenerativeAI(getNextKey() || process.env.GEMINI_API_KEY)
 }
 
@@ -93,7 +95,7 @@ function getCacheKey(promptParts) {
   return hash.digest('hex')
 }
 
-async function callWithRetry(promptParts, modelIdx = 0, attempt = 0) {
+export async function callWithRetry(promptParts, modelIdx = 0, attempt = 0) {
   const cacheKey = getCacheKey(promptParts)
   const cacheFile = path.join(CACHE_DIR, `${cacheKey}.json`)
   
@@ -498,10 +500,11 @@ export function generateVerdict(comparison, modelIssues = []) {
   const medFails = comparison.filter(r => r.status === 'mismatch' && r.severity !== 'HIGH')
   const warnings = comparison.filter(r => r.status === 'warning')
   const passes = comparison.filter(r => r.status === 'match')
+  const skipped = comparison.filter(r => r.status === 'skip')
 
   const criticalCount = highFails.length + modelIssues.length
   let status = 'PASS'
-  let reason = 'All checks passed — product matches catalog attributes closely.'
+  let reason = 'All checks passed - product matches catalog attributes closely.'
 
   if (modelIssues.find(i => i.extractionFailed)) {
     return {
@@ -512,7 +515,14 @@ export function generateVerdict(comparison, modelIssues = []) {
     }
   }
 
-  if (criticalCount > 0) {
+  // If ALL attributes are skipped, this is NOT a pass
+  if (skipped.length === comparison.length) {
+    status = 'UNVERIFIED'
+    reason = 'No attributes could be extracted or compared. Upload better images or fill in metadata.'
+  } else if (skipped.length > comparison.length * 0.7) {
+    status = 'WARNING'
+    reason = `Only ${passes.length}/${comparison.length} attributes verified. ${skipped.length} could not be checked - provide more metadata.`
+  } else if (criticalCount > 0) {
     status = 'FAIL'
     const issues = [...highFails.map(f => f.key), ...modelIssues.map(m => m.attr)]
     reason = `Critical mismatches in: ${issues.join(', ')}`
@@ -531,6 +541,7 @@ export function generateVerdict(comparison, modelIssues = []) {
       matches: passes.length,
       warnings: warnings.length + medFails.length,
       mismatches: highFails.length,
+      skipped: skipped.length,
     }
   }
 }
@@ -543,24 +554,24 @@ export function generateVerdict(comparison, modelIssues = []) {
  */
 export async function getGarmentBoundingBoxRatio(imagePath) {
   try {
-    const pythonScript = path.join(process.cwd(), 'services', 'segmentation_cli.py')
-    
-    // Call python script via execFile for security (no shell injection)
-    const { stdout } = await execFileAsync('python', [pythonScript, imagePath], { maxBuffer: 1024 * 1024 * 10 })
-    
-    const result = JSON.parse(stdout)
+    const response = await fetch('http://localhost:8100/segment', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ image_path: imagePath })
+    })
+    const result = await response.json()
     if (result.success) {
       return { 
-        ratio: result.ratio.toFixed(2), 
+        ratio: Number(result.ratio).toFixed(2), 
         length_category: result.length_category,
         cutout_path: result.cutout_path
       }
     } else {
-      console.warn("Segmentation CLI returned error:", result.error)
+      console.warn("Segmentation API returned error:", result.error)
       return null
     }
   } catch (err) {
-    console.warn("Could not calculate aspect ratio using rembg:", err.message)
+    console.warn("Could not calculate aspect ratio via API:", err.message)
     return null
   }
 }
@@ -583,10 +594,10 @@ export async function generateCorrections(comparisonResult, modelIssues = [], an
     (row.status === 'mismatch' || row.status === 'warning') && row.declared_value && row.anchor_value
   )
 
-  // Batch cross-verify: ONE Python call, ONE model load, ALL checks
+  // Batch cross-verify: ONE API call, ALL checks
   let crossVerifyResults = {}
   if (anchorImagePath && toVerify.length > 0) {
-    console.log(`[CORRECTIONS] Cross-verifying ${toVerify.length} attributes using CLIP binary-batch...`)
+    console.log(`[CORRECTIONS] Cross-verifying ${toVerify.length} attributes using CLIP binary-batch API...`)
     const pairs = toVerify.map(row => ({
       key: row.key,
       a: row.anchor_value,
@@ -594,18 +605,17 @@ export async function generateCorrections(comparisonResult, modelIssues = [], an
     }))
 
     try {
-      const pythonScript = path.join(process.cwd(), 'services', 'clip_similarity_cli.py')
-      const pairsJson = JSON.stringify(pairs)
-      const { stdout } = await execFileAsync('python', [pythonScript, '--binary-batch', anchorImagePath, pairsJson], {
-        maxBuffer: 1024 * 1024 * 10,
-        timeout: 120000, // 2 minute timeout
+      const response = await fetch('http://localhost:8100/clip/binary-batch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ image_path: anchorImagePath, pairs })
       })
-      const result = JSON.parse(stdout)
+      const result = await response.json()
       if (result.success) {
         crossVerifyResults = result.results
       }
     } catch (err) {
-      console.warn('[CORRECTIONS] Batch cross-verification failed:', err.message)
+      console.warn('[CORRECTIONS] Batch cross-verification via API failed:', err.message)
     }
     console.log(`[CORRECTIONS] Cross-verification complete: ${Object.keys(crossVerifyResults).length} attributes checked`)
   }
@@ -678,17 +688,20 @@ export async function generateCorrections(comparisonResult, modelIssues = [], an
  */
 export async function runClipZeroShot(imagePath) {
   try {
-    const pythonScript = path.join(process.cwd(), 'services', 'clip_similarity_cli.py')
-    const { stdout } = await execFileAsync('python', [pythonScript, '--zero-shot', imagePath], { maxBuffer: 1024 * 1024 * 10 })
-    const result = JSON.parse(stdout)
+    const response = await fetch('http://localhost:8100/clip/zero-shot', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ image_path: imagePath })
+    })
+    const result = await response.json()
     if (result.success) {
       return result.attributes
     } else {
-      console.warn('[CLIP-ZS] Zero-shot returned error:', result.error)
+      console.warn('[CLIP-ZS] API Zero-shot returned error:', result.error)
       return null
     }
   } catch (err) {
-    console.warn('[CLIP-ZS] Zero-shot failed:', err.message)
+    console.warn('[CLIP-ZS] API Zero-shot failed:', err.message)
     return null
   }
 }
@@ -704,61 +717,176 @@ export async function extractAnchorAttributes(imagePaths) {
   if (!imagePaths || imagePaths.length === 0) return {}
   const primaryPath = imagePaths[0]
 
-  console.log(`[EXTRACT] Running local extraction on ${imagePaths.length} anchor images...`)
+  console.log(`[EXTRACT] Running extraction on ${imagePaths.length} anchor images...`)
 
-  // Run ViT + CLIP zero-shot + Segmentation in parallel
+  // ══════════════════════════════════════════════════════════════
+  // PRIMARY: Gemini Vision (accurate, understands fashion)
+  // ══════════════════════════════════════════════════════════════
+  let geminiAttrs = null
+  if (apiKeys.length > 0) {
+    try {
+      console.log('[EXTRACT] Phase 1: Gemini Vision (primary extractor)...')
+      const inlineImages = await Promise.all(
+        imagePaths.slice(0, 3).map(p => fileToInlineData(p))
+      )
+
+      const enumSection = buildEnumPromptSection()
+      const prompt = `You are an expert fashion product analyst for an Indian e-commerce platform (like Myntra/Ajio).
+
+Analyze the garment shown in the provided image(s) and extract ALL of the following attributes. Be extremely precise — if the garment is a crop top, say "Crop" not "Hip Length". If it's half sleeve, say "Short Sleeve" not "Full Sleeve".
+
+For each attribute, you MUST choose ONLY from the allowed values listed below:
+
+${enumSection}
+
+Return ONLY a JSON object with this exact structure (no markdown, no explanation):
+{
+  "garment_type": "value",
+  "primary_color": "value",
+  "secondary_color": "value or None",
+  "pattern_type": "value",
+  "fabric_appearance": "value",
+  "overall_length": "value",
+  "sleeve_length": "value",
+  "neck_type": "value",
+  "silhouette": "value",
+  "fit": "value",
+  "embellishment": "value or None",
+  "transparency": "value",
+  "hemline": "value",
+  "occasion_style": "value",
+  "motif_description": "value or None",
+  "closure_type": "value",
+  "structural_features": "value or None"
+}
+
+CRITICAL RULES:
+- Look at the ACTUAL garment, not what you think it might be
+- For color: identify the dominant color as seen in the photo. "Pink" not "Multi" if it's clearly pink.
+- For length: compare garment to model's body. Crop = above waist. Hip Length = covers hips. Knee Length = at knees.
+- For sleeves: Sleeveless = no sleeves at all. Short Sleeve = above elbow. Full Sleeve = to wrist.
+- For fabric: if you can't determine fabric type from the image, say "Not determinable"
+- DO NOT guess. If something is not visible or determinable, use "Not determinable".`
+
+      const promptParts = [
+        ...inlineImages,
+        { text: prompt }
+      ]
+
+      const rawText = await callWithRetry(promptParts)
+      geminiAttrs = parseJSON(rawText)
+      console.log(`[EXTRACT] Gemini Vision extracted ${Object.keys(geminiAttrs).length} attributes`)
+    } catch (err) {
+      console.warn('[EXTRACT] Gemini Vision failed:', err.message, '— falling back to local models')
+    }
+  } else {
+    console.log('[EXTRACT] No Gemini API key — using local models only')
+  }
+
+  // ══════════════════════════════════════════════════════════════
+  // SECONDARY: ViT + CLIP zero-shot (local, for cross-validation)
+  // ══════════════════════════════════════════════════════════════
+  console.log('[EXTRACT] Phase 2: Local ViT + CLIP (cross-validation)...')
   const [vitResult, clipZsResult, cvRatio] = await Promise.all([
     runVitInference(primaryPath),
     runClipZeroShot(primaryPath),
     getGarmentBoundingBoxRatio(primaryPath)
   ])
 
+  // ══════════════════════════════════════════════════════════════
+  // MERGE: Gemini primary → ViT/CLIP fills gaps + cross-validates
+  // ══════════════════════════════════════════════════════════════
   const attrs = {}
 
-  // Layer 1: ViT predictions (6 core attributes, 89% accuracy)
-  if (vitResult) {
-    const VIT_TO_CANONICAL = {
-      garment_type: 'garment_type',
-      sleeve_length: 'sleeve_length',
-      neck_type: 'neck_type',
-      overall_length: 'overall_length',
-      fabric_type: 'fabric_appearance',
-      primary_color: 'primary_color',
-    }
-    for (const [vitKey, canonicalKey] of Object.entries(VIT_TO_CANONICAL)) {
-      if (vitResult[vitKey]) {
-        const raw = vitResult[vitKey]
-        attrs[canonicalKey] = {
-          value: raw.value,
-          confidence: normalizeConfidence(raw.confidence),
-          source: 'ViT'
-        }
-      }
-    }
-    console.log(`[EXTRACT-ANCHOR] ViT extracted: ${Object.keys(attrs).map(k => `${k}=${attrs[k].value}`).join(', ')}`)
-  } else {
-    console.warn('[EXTRACT-ANCHOR] ViT failed — core attributes will be missing')
-  }
-
-  // Layer 2: CLIP zero-shot predictions (11 supplementary attributes)
-  if (clipZsResult) {
-    let clipAdded = 0
-    for (const [key, val] of Object.entries(clipZsResult)) {
-      if (!attrs[key]) {
+  if (geminiAttrs) {
+    // Use Gemini as primary source for all attributes
+    for (const [key, value] of Object.entries(geminiAttrs)) {
+      if (value && value !== 'None' && value !== 'Not determinable') {
         attrs[key] = {
-          value: val.value,
-          confidence: normalizeConfidence(val.confidence),
-          source: 'CLIP-ZeroShot'
+          value: value,
+          confidence: 'HIGH',
+          source: 'Gemini-Vision'
         }
-        clipAdded++
       }
     }
-    console.log(`[EXTRACT-ANCHOR] CLIP zero-shot added ${clipAdded} supplementary attributes`)
+
+    // Cross-validate with ViT — if ViT disagrees on a core attribute, add note
+    if (vitResult) {
+      const VIT_MAP = {
+        garment_type: 'garment_type',
+        sleeve_length: 'sleeve_length',
+        neck_type: 'neck_type',
+        overall_length: 'overall_length',
+        fabric_type: 'fabric_appearance',
+        primary_color: 'primary_color',
+      }
+      for (const [vitKey, canonKey] of Object.entries(VIT_MAP)) {
+        if (vitResult[vitKey] && attrs[canonKey]) {
+          const vitVal = vitResult[vitKey].value
+          const geminiVal = attrs[canonKey].value
+          if (vitVal && vitVal !== geminiVal) {
+            attrs[canonKey].cross_check = `ViT says "${vitVal}" (conf: ${vitResult[vitKey].confidence?.toFixed(2)})`
+            // If ViT has very high confidence (>0.95) and Gemini disagrees, flag for review
+            if (vitResult[vitKey].confidence > 0.95) {
+              attrs[canonKey].confidence = 'MEDIUM'
+              attrs[canonKey].needs_review = true
+            }
+          }
+        }
+      }
+      console.log(`[EXTRACT] ViT cross-validation complete`)
+    }
+
+    // Use CLIP zero-shot to fill any remaining gaps
+    if (clipZsResult) {
+      let clipFilled = 0
+      for (const [key, val] of Object.entries(clipZsResult)) {
+        if (!attrs[key] && val.value) {
+          attrs[key] = {
+            value: val.value,
+            confidence: normalizeConfidence(val.confidence),
+            source: 'CLIP-ZeroShot'
+          }
+          clipFilled++
+        }
+      }
+      if (clipFilled > 0) console.log(`[EXTRACT] CLIP filled ${clipFilled} gaps`)
+    }
   } else {
-    console.warn('[EXTRACT-ANCHOR] CLIP zero-shot failed — supplementary attributes will be missing')
+    // FALLBACK: No Gemini — use ViT + CLIP as before
+    console.log('[EXTRACT] Using ViT + CLIP as primary (Gemini unavailable)')
+    
+    if (vitResult) {
+      const VIT_MAP = {
+        garment_type: 'garment_type', sleeve_length: 'sleeve_length',
+        neck_type: 'neck_type', overall_length: 'overall_length',
+        fabric_type: 'fabric_appearance', primary_color: 'primary_color',
+      }
+      for (const [vitKey, canonKey] of Object.entries(VIT_MAP)) {
+        if (vitResult[vitKey]) {
+          attrs[canonKey] = {
+            value: vitResult[vitKey].value,
+            confidence: normalizeConfidence(vitResult[vitKey].confidence),
+            source: 'ViT'
+          }
+        }
+      }
+    }
+
+    if (clipZsResult) {
+      for (const [key, val] of Object.entries(clipZsResult)) {
+        if (!attrs[key]) {
+          attrs[key] = {
+            value: val.value,
+            confidence: normalizeConfidence(val.confidence),
+            source: 'CLIP-ZeroShot'
+          }
+        }
+      }
+    }
   }
 
-  // Layer 3: CV length verification (independent geometric signal)
+  // CV length verification (independent geometric signal)
   if (cvRatio && attrs.overall_length) {
     attrs.cv_overall_length = {
       value: cvRatio.length_category,
@@ -767,7 +895,8 @@ export async function extractAnchorAttributes(imagePaths) {
     }
   }
 
-  console.log(`[EXTRACT] Anchor extraction complete: ${Object.keys(attrs).length} attributes (0 API calls)`)
+  console.log(`[EXTRACT] Extraction complete: ${Object.keys(attrs).length} attributes`)
+  console.log(`[EXTRACT] Sources: ${[...new Set(Object.values(attrs).map(a => a.source))].join(' + ')}`)
   return attrs
 }
 
@@ -1062,29 +1191,31 @@ export async function generateCatalogImage(imagePaths, attributes, cvOverallLeng
       }
 
       try {
-        const genAI = getGenAI()
-        const model = genAI.getGenerativeModel({
-          model: 'gemini-2.0-flash-preview-image-generation',
-          generationConfig: {
-            responseModalities: ['TEXT', 'IMAGE'],
-          },
+        const apiKey = getNextKey() || process.env.GEMINI_API_KEY
+        const ai = new GoogleGenAI({ apiKey: apiKey })
+        const anchorInlineData = await fileToInlineData(anchorPath)
+
+        const response = await ai.models.generateContent({
+          model: 'gemini-2.5-flash-preview-image-generation',
+          contents: [
+            {
+              parts: [
+                anchorInlineData,
+                { text: `Using the garment shown in the reference image above, ${view.prompt}` }
+              ]
+            }
+          ],
+          config: { responseModalities: ['TEXT', 'IMAGE'] }
         })
 
-        // Send anchor image as reference + mega-prompt
-        const anchorInlineData = await fileToInlineData(anchorPath)
-        const result = await model.generateContent([
-          anchorInlineData,
-          { text: `Using the garment shown in the reference image above, ${view.prompt}` },
-        ])
-
-        const response = result.response
         let imageGenerated = false
 
         // Extract generated image from response
         if (response.candidates?.[0]?.content?.parts) {
           for (const part of response.candidates[0].content.parts) {
-            if (part.inlineData) {
-              const imgBuffer = Buffer.from(part.inlineData.data, 'base64')
+            if (part.inlineData || part.inline_data) {
+              const inlineData = part.inlineData || part.inline_data
+              const imgBuffer = Buffer.from(inlineData.data, 'base64')
               fs.writeFileSync(outputFile, imgBuffer)
               generatedImages.push({
                 view: view.name,
@@ -1132,9 +1263,12 @@ export async function generateCatalogImage(imagePaths, attributes, cvOverallLeng
       sourceBuffer = fs.readFileSync(cvOverallLength.cutout_path)
     } else {
       try {
-        const pythonScript = path.join(process.cwd(), 'services', 'segmentation_cli.py')
-        const { stdout } = await execFileAsync('python', [pythonScript, anchorPath], { maxBuffer: 1024 * 1024 * 10 })
-        const segResult = JSON.parse(stdout)
+        const response = await fetch('http://localhost:8100/segment', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ image_path: anchorPath })
+        })
+        const segResult = await response.json()
         if (segResult.success && segResult.cutout_path) {
           sourceBuffer = fs.readFileSync(segResult.cutout_path)
         } else {
@@ -1177,41 +1311,49 @@ export async function generateCatalogImage(imagePaths, attributes, cvOverallLeng
 
 export async function runClipSimilarity(anchorPath, catalogPath) {
   try {
-    const pythonScript = path.join(process.cwd(), 'services', 'clip_similarity_cli.py')
-    const { stdout } = await execFileAsync('python', [pythonScript, anchorPath, catalogPath], { maxBuffer: 1024 * 1024 * 10 })
-    
-    const result = JSON.parse(stdout)
+    const response = await fetch('http://localhost:8100/clip/similarity', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ anchor_path: anchorPath, catalog_path: catalogPath })
+    })
+    const result = await response.json()
     if (result.success) {
       return result
     } else {
-      console.warn("CLIP CLI returned error:", result.error)
+      console.warn("CLIP API returned error:", result.error)
       return null
     }
   } catch (err) {
-    console.warn("Could not calculate CLIP similarity:", err.message)
+    console.warn("Could not calculate CLIP similarity via API:", err.message)
     return null
   }
 }
 
 export async function runVitInference(imagePath) {
   try {
-    const pythonScript = path.join(process.cwd(), 'services', 'vit_infer_cli.py')
-    const { stdout } = await execFileAsync('python', [pythonScript, imagePath], { maxBuffer: 1024 * 1024 * 10 })
-    return JSON.parse(stdout)
+    const response = await fetch('http://localhost:8100/vit/predict', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ image_path: imagePath })
+    })
+    return await response.json()
   } catch (err) {
-    console.warn("ViT Inference failed:", err.message)
+    console.warn("ViT Inference API failed:", err.message)
     return null
   }
 }
 
 export async function runPhashSimilarity(anchorPath, catalogPath) {
   try {
-    const pythonScript = path.join(process.cwd(), 'services', 'phash_cli.py')
-    const { stdout } = await execFileAsync('python', [pythonScript, anchorPath, catalogPath], { maxBuffer: 1024 * 1024 * 10 })
-    const result = JSON.parse(stdout)
+    const response = await fetch('http://localhost:8100/phash', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ anchor_path: anchorPath, catalog_path: catalogPath })
+    })
+    const result = await response.json()
     return result.success ? result : null
   } catch (err) {
-    console.warn("pHash failed:", err.message)
+    console.warn("pHash API failed:", err.message)
     return null
   }
 }

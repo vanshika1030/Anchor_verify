@@ -23,7 +23,7 @@ export default function Verify() {
   const nav = useNavigate()
   const {
     anchorFront, anchorBack, anchorCloseup,
-    catalogFiles, catalogPreviews, mode, confirmedAttrs,
+    catalogFiles, catalogPreviews, mode, confirmedAttrs, setConfirmedAttrs,
     anchorExtracted, setCatalogExtracted,
     comparisonResult, setComparisonResult,
     fabricResult, setFabricResult,
@@ -33,6 +33,7 @@ export default function Verify() {
     csvSessionId, csvRowIndex,
   } = useApp()
 
+  const [acceptedCorrections, setAcceptedCorrections] = useState({})
   const [loading, setLoading] = useState(true)
   const [progress, setProgress] = useState('')
   const [error, setError] = useState(null)
@@ -128,6 +129,34 @@ export default function Verify() {
         console.error('Failed to update CSV row:', err)
       }
     }
+
+    // Save to database
+    try {
+      const token = localStorage.getItem('token')
+      if (token) {
+        const attrs = anchorExtracted || {}
+        await fetch('http://localhost:3001/api/products', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify({
+            title: attrs.garment_type || 'Product',
+            article_type: attrs.garment_type || '',
+            category: attrs.garment_type || '',
+            brand_name: confirmedAttrs?.brand || 'Brand',
+            attributes: attrs,
+            verification_status: v?.status?.toLowerCase() || 'unverified',
+            verification_score: v?.overall_similarity || null,
+            anchor_image_url: anchorFront?.preview || null,
+          })
+        })
+      }
+    } catch (err) {
+      console.error('Failed to save product:', err)
+    }
+
     nav('/new-listing/success')
   }
 
@@ -196,6 +225,7 @@ export default function Verify() {
   const failCount = rows.filter(r => r.status === 'mismatch' && r.severity === 'HIGH').length + (modelIssues?.length || 0)
   const warnCount = rows.filter(r => r.status === 'mismatch' && r.severity !== 'HIGH').length + rows.filter(r => r.status === 'warning').length
   const passCount = rows.filter(r => r.status === 'match').length
+  const skipCount = rows.filter(r => r.status === 'skip').length
   const v = verdict || { status: 'PASS', reason: 'Completed', critical_issues: [] }
 
   return (
@@ -222,6 +252,7 @@ export default function Verify() {
           <span style={{ color: 'var(--danger)' }}>{failCount} failed</span>
           <span style={{ color: 'var(--warning)' }}>{warnCount} warnings</span>
           <span style={{ color: 'var(--success)' }}>{passCount} passed</span>
+          {skipCount > 0 && <span style={{ color: '#e65100' }}>{skipCount} not detected</span>}
         </div>
       </div>
 
@@ -236,35 +267,59 @@ export default function Verify() {
             We noticed some discrepancies between your inputs and our visual analysis. Items marked <strong style={{color:'var(--success)'}}>✓ Verified</strong> have been cross-checked against your anchor image.
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-            {corrections.map((c, i) => (
-              <div key={i} style={{ background: '#f8f9fa', borderRadius: 8, padding: 12, border: '1px solid var(--border)' }}>
-                <div style={{ fontSize: 13, fontWeight: 600, textTransform: 'capitalize', color: 'var(--text-secondary)', marginBottom: 4 }}>
-                  {c.field.replace('_', ' ')}
+            {corrections.map((c, i) => {
+              const status = acceptedCorrections[c.field] === 'IGNORED' ? 'ignored' : (acceptedCorrections[c.field] ? 'accepted' : 'pending');
+              const isAccepted = status === 'accepted';
+              const isIgnored = status === 'ignored';
+              
+              return (
+                <div key={i} style={{ 
+                  background: isAccepted ? '#e8f5e9' : isIgnored ? '#f5f5f5' : '#f8f9fa', 
+                  borderRadius: 8, 
+                  padding: 12, 
+                  border: isAccepted ? '1px solid var(--success)' : '1px solid var(--border)',
+                  opacity: isIgnored ? 0.6 : 1
+                }}>
+                  <div style={{ fontSize: 13, fontWeight: 600, textTransform: 'capitalize', color: isAccepted ? 'var(--success)' : 'var(--text-secondary)', marginBottom: 4, display: 'flex', alignItems: 'center', gap: 6 }}>
+                    {c.field.replace('_', ' ')}
+                    {isAccepted && <span style={{ fontSize: 11, display: 'flex', alignItems: 'center', gap: 4 }}><CheckCircle size={12} /> Applied</span>}
+                    {isIgnored && <span style={{ fontSize: 11, display: 'flex', alignItems: 'center', gap: 4 }}><XCircle size={12} /> Ignored</span>}
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8, textDecoration: isIgnored ? 'line-through' : 'none' }}>
+                    <div style={{ textDecoration: 'line-through', color: 'var(--danger)', fontSize: 14 }}>{c.current_value}</div>
+                    <ArrowRight size={14} color="var(--text-secondary)" />
+                    <div style={{ fontWeight: 600, color: 'var(--success)', fontSize: 14 }}>{c.suggested_value}</div>
+                  </div>
+                  <div style={{ fontSize: 12, color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: 6, textDecoration: isIgnored ? 'line-through' : 'none' }}>
+                    {c.cross_verified === 'ai_confirmed' && <span style={{ color: 'var(--success)', fontWeight: 600, fontSize: 11 }}>✓ Cross-verified</span>}
+                    {c.cross_verified === 'uncertain' && <span style={{ color: 'var(--warning)', fontWeight: 600, fontSize: 11 }}>⚠ Needs review</span>}
+                    {c.cross_verified === 'not_verified' && <span style={{ color: 'var(--text-secondary)', fontSize: 11 }}>◯ Unchecked</span>}
+                    <span style={{ marginLeft: 4 }}>{c.reason}</span>
+                  </div>
+                  {status === 'pending' && (
+                    <div style={{ marginTop: 10, display: 'flex', gap: 8 }}>
+                      <button className="btn btn-primary" style={{ padding: '6px 12px', fontSize: 12 }} onClick={() => {
+                        setAcceptedCorrections(prev => ({...prev, [c.field]: c.suggested_value}))
+                        if (setConfirmedAttrs) {
+                          setConfirmedAttrs(prev => ({...prev, [c.field]: c.suggested_value}))
+                        }
+                      }}>
+                        Accept Fix
+                      </button>
+                      <button className="btn btn-outline" style={{ padding: '6px 12px', fontSize: 12 }} onClick={() => {
+                        setAcceptedCorrections(prev => ({...prev, [c.field]: 'IGNORED'}))
+                      }}>
+                        Ignore
+                      </button>
+                    </div>
+                  )}
                 </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8 }}>
-                  <div style={{ textDecoration: 'line-through', color: 'var(--danger)', fontSize: 14 }}>{c.current_value}</div>
-                  <ArrowRight size={14} color="var(--text-secondary)" />
-                  <div style={{ fontWeight: 600, color: 'var(--success)', fontSize: 14 }}>{c.suggested_value}</div>
-                </div>
-                <div style={{ fontSize: 12, color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: 6 }}>
-                  {c.cross_verified === 'ai_confirmed' && <span style={{ color: 'var(--success)', fontWeight: 600, fontSize: 11 }}>✓ Cross-verified</span>}
-                  {c.cross_verified === 'uncertain' && <span style={{ color: 'var(--warning)', fontWeight: 600, fontSize: 11 }}>⚠ Needs review</span>}
-                  {c.cross_verified === 'not_verified' && <span style={{ color: 'var(--text-secondary)', fontSize: 11 }}>◯ Unchecked</span>}
-                  <span style={{ marginLeft: 4 }}>{c.reason}</span>
-                </div>
-                <div style={{ marginTop: 10, display: 'flex', gap: 8 }}>
-                  <button className="btn btn-primary" style={{ padding: '6px 12px', fontSize: 12 }} onClick={() => {
-                     // In a real app, this would automatically update the seller's input
-                     alert(`Accepted fix for ${c.field}`)
-                  }}>
-                    Accept Fix
-                  </button>
-                  <button className="btn btn-outline" style={{ padding: '6px 12px', fontSize: 12 }}>
-                    Ignore
-                  </button>
-                </div>
-              </div>
-            ))}
+              )
+            })}
+          </div>
+          <div style={{ fontSize: 13, color: 'var(--text-secondary)', marginTop: 12, borderTop: '1px solid var(--border)', paddingTop: 12 }}>
+            {Object.keys(acceptedCorrections).filter(k => acceptedCorrections[k] !== 'IGNORED').length} of {corrections.length} corrections applied. 
+            {Object.keys(acceptedCorrections).filter(k => acceptedCorrections[k] === 'IGNORED').length > 0 && " Ignored items will be kept as declared."}
           </div>
         </div>
       )}
@@ -506,11 +561,11 @@ export default function Verify() {
                     {r.declared_value || '—'}
                   </td>
                   <td>
-                    <span className={`badge ${r.status === 'match' ? 'badge-pass' : r.status === 'mismatch' ? (r.severity === 'HIGH' ? 'badge-fail' : 'badge-warn') : r.status === 'warning' ? 'badge-warn' : 'badge-neutral'}`}>
+                    <span className={`badge ${r.status === 'match' ? 'badge-pass' : r.status === 'mismatch' ? (r.severity === 'HIGH' ? 'badge-fail' : 'badge-warn') : r.status === 'warning' ? 'badge-warn' : 'badge-fail'}`} style={r.status === 'skip' ? { background: '#fff3e0', color: '#e65100', border: '1px solid #ffcc80' } : undefined}>
                       {r.status === 'match' ? 'Match' :
                        r.status === 'mismatch' ? `Mismatch \u00B7 ${r.severity}` :
                        r.status === 'warning' ? `Warning \u00B7 ${r.severity || 'LOW'}` :
-                       'Skipped'}
+                       'Not detected'}
                     </span>
                   </td>
                 </tr>
@@ -527,6 +582,23 @@ export default function Verify() {
           </tbody>
         </table>
       </div>
+
+      {/* Fabric closeup needed banner */}
+      {rows.some(r => r.key === 'fabric_appearance' && (r.status === 'skip' || r.anchor_confidence === 'LOW')) && (
+        <div className="card" style={{ borderLeft: '4px solid #e65100', marginTop: 16, padding: 16, background: '#fff3e0' }}>
+          <div style={{ fontWeight: 600, color: '#e65100', marginBottom: 8 }}>Fabric Not Identified</div>
+          <div style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 12 }}>We couldn't confidently identify the fabric from your images. Upload a close-up photo of the fabric texture for better accuracy.</div>
+          <label className="btn btn-outline" style={{ cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+            <input type="file" accept="image/*" hidden onChange={(e) => {
+              if (e.target.files && e.target.files[0]) {
+                const url = URL.createObjectURL(e.target.files[0]);
+                alert('Fabric image uploaded. (Re-extraction TODO)');
+              }
+            }} />
+            Upload Fabric Close-up
+          </label>
+        </div>
+      )}
 
       {/* Fabric verification */}
       {fabricResult && (
