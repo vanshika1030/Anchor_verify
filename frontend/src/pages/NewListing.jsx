@@ -29,6 +29,7 @@ export default function NewListing() {
 
   // RIGHT COLUMN STATE
   const [rightStep, setRightStep] = useState(1);
+  const [showRightConfirm, setShowRightConfirm] = useState(false);
   const [extractedAttrs, setExtractedAttrs] = useState(null);
   
   const rightFrontRef = useRef(null);
@@ -176,14 +177,7 @@ export default function NewListing() {
       const result = await extractAnchorAttributes(files);
       setExtractedAttrs(result.attributes);
       setAnchorExtracted(result.attributes);
-      
-      setConfirmedAttrs({
-        model_size: rightModelSize,
-        model_height: rightModelHeight
-      });
-      
-      setMode('generate');
-      navigate('/verify');
+      setShowRightConfirm(true);
     } catch (err) {
       console.error(err);
       alert('Failed to extract attributes');
@@ -326,7 +320,7 @@ export default function NewListing() {
             Auto-generate catalog details from raw images.
           </p>
 
-          {rightStep === 1 && (
+          {rightStep === 1 && !showRightConfirm && (
             <div>
               <label className="form-label">Step 1: Upload Anchor Images</label>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', marginBottom: '24px' }}>
@@ -442,7 +436,59 @@ export default function NewListing() {
             </div>
           )}
 
-          {/* We removed the inline rightStep === 2 UI here because extraction now redirects to Details.jsx */}
+          {showRightConfirm && extractedAttrs && (
+            <div style={{ animation: 'fadeIn 0.3s ease' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+                <h3 style={{ fontSize: 16, fontWeight: 600 }}>Confirm Attributes</h3>
+                <button className="btn btn-outline" style={{ padding: '4px 8px', fontSize: 12 }} onClick={() => setShowRightConfirm(false)}>Back</button>
+              </div>
+              
+              <div style={{ display: 'grid', gap: 12, marginBottom: 24, maxHeight: '400px', overflowY: 'auto', paddingRight: 8 }}>
+                {Object.entries(extractedAttrs).map(([key, val]) => {
+                  if (typeof val === 'object' && val !== null) {
+                    return (
+                      <div key={key}>
+                        <label className="form-label" style={{ fontSize: 12, textTransform: 'capitalize' }}>{key.replace(/_/g, ' ')}</label>
+                        <input 
+                          type="text" 
+                          className="form-input" 
+                          value={val.value || ''} 
+                          onChange={(e) => setExtractedAttrs({...extractedAttrs, [key]: { ...val, value: e.target.value }})} 
+                        />
+                      </div>
+                    );
+                  }
+                  return (
+                    <div key={key}>
+                      <label className="form-label" style={{ fontSize: 12, textTransform: 'capitalize' }}>{key.replace(/_/g, ' ')}</label>
+                      <input 
+                        type="text" 
+                        className="form-input" 
+                        value={val || ''} 
+                        onChange={(e) => setExtractedAttrs({...extractedAttrs, [key]: e.target.value})} 
+                      />
+                    </div>
+                  );
+                })}
+              </div>
+
+              <button 
+                className="btn btn-primary" 
+                style={{ width: '100%', background: 'linear-gradient(45deg, #ff3f6c, #f77062)', border: 'none' }} 
+                onClick={() => {
+                  setConfirmedAttrs({
+                    ...extractedAttrs,
+                    model_size: rightModelSize,
+                    model_height: rightModelHeight
+                  });
+                  setMode('generate');
+                  navigate('/verify');
+                }}
+              >
+                Confirm & Generate AI Catalog <ArrowRight size={16} />
+              </button>
+            </div>
+          )}
 
         </div>
       </div>

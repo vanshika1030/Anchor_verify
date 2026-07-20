@@ -1334,7 +1334,6 @@ export async function generateCatalogImage(imagePaths, attributes, cvOverallLeng
 
   // Fallback: compositing (garment on white canvas)
   console.log('[IMAGE-GEN] Falling back to compositing (no AI model images)')
-  const outputPath = path.join(process.cwd(), 'uploads', `gen_${parsedPath.name}.png`)
   
   try {
     let sourceBuffer
@@ -1358,32 +1357,56 @@ export async function generateCatalogImage(imagePaths, attributes, cvOverallLeng
       }
     }
     
-    const resizedGarment = await sharp(sourceBuffer)
-      .resize(500, 700, { fit: 'inside', withoutEnlargement: false })
-      .png()
-      .toBuffer()
+    // Dynamic Size and Height scaling maps
+    const SIZE_SCALES = { 'XS': 0.85, 'S': 0.92, 'M': 1.0, 'L': 1.08, 'XL': 1.15, 'XXL': 1.25 };
+    const HEIGHT_SCALES = { "5'2": 0.9, "5'4": 0.95, "5'6": 1.0, "5'8": 1.05, "5'10": 1.1, "6'0": 1.15 };
     
-    const garmentMeta = await sharp(resizedGarment).metadata()
-    const canvasW = 600
-    const canvasH = 800
-    const left = Math.round((canvasW - garmentMeta.width) / 2)
-    const top = Math.round((canvasH - garmentMeta.height) / 2)
+    const parsedHeight = modelHeight.replace(/"/g, ''); // e.g. "6'0"
+    const wScale = SIZE_SCALES[modelSize] || 1.0;
+    const hScale = HEIGHT_SCALES[parsedHeight] || 1.0;
     
-    const borderSvg = `<svg width="${canvasW}" height="${canvasH}"><rect x="4" y="4" width="${canvasW - 8}" height="${canvasH - 8}" fill="none" stroke="#e0e0e0" stroke-width="2" rx="8"/></svg>`
+    // We generate 5 composite images for the 5 views to ensure the frontend doesn't break
+    const generatedFallbackImages = [];
+    const canvasW = 600;
+    const canvasH = 800;
     
-    await sharp({
-      create: { width: canvasW, height: canvasH, channels: 4, background: { r: 248, g: 248, b: 248, alpha: 1 } }
-    })
-    .composite([
-      { input: resizedGarment, top, left },
-      { input: Buffer.from(borderSvg), top: 0, left: 0 }
-    ])
-    .png()
-    .toFile(outputPath)
+    for (const view of VIEWS) {
+      const outputPath = path.join(process.cwd(), 'uploads', `gen_${parsedPath.name}_${view.name}.png`);
       
-    return `http://localhost:3001/uploads/gen_${parsedPath.name}.png`
+      const resizedGarment = await sharp(sourceBuffer)
+        .resize(Math.round(400 * wScale), Math.round(600 * hScale), { fit: 'inside', withoutEnlargement: true })
+        .png()
+        .toBuffer();
+      
+      const garmentMeta = await sharp(resizedGarment).metadata();
+      const left = Math.round((canvasW - garmentMeta.width) / 2);
+      const top = Math.round((canvasH - garmentMeta.height) / 2);
+      
+      // Simple watermark text to distinguish views (Optional, can be removed)
+      const borderSvg = `<svg width="${canvasW}" height="${canvasH}">
+        <rect x="4" y="4" width="${canvasW - 8}" height="${canvasH - 8}" fill="none" stroke="#e0e0e0" stroke-width="2" rx="8"/>
+        <text x="20" y="30" fill="#999" font-family="sans-serif" font-size="14">${view.name.toUpperCase()} VIEW (Fallback)</text>
+      </svg>`;
+      
+      await sharp({
+        create: { width: canvasW, height: canvasH, channels: 4, background: { r: 248, g: 248, b: 248, alpha: 1 } }
+      })
+      .composite([
+        { input: resizedGarment, top, left },
+        { input: Buffer.from(borderSvg), top: 0, left: 0 }
+      ])
+      .png()
+      .toFile(outputPath);
+      
+      generatedFallbackImages.push({
+        view: view.name,
+        url: `http://localhost:3001/uploads/gen_${parsedPath.name}_${view.name}.png`
+      });
+    }
+      
+    return generatedFallbackImages;
   } catch (err) {
-    console.error("Failed to composite catalog image:", err)
+    console.error("Failed to composite catalog images:", err)
     return null
   }
 }
