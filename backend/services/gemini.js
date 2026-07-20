@@ -43,9 +43,9 @@ global.fetch = async (url, options) => {
   return originalFetch(url, options)
 }
 
-export function initGemini(keyStr) {
-  if (keyStr) {
-    apiKeys = keyStr.split(',').map(k => k.trim()).filter(Boolean)
+export function initGemini(keys) {
+  if (Array.isArray(keys) && keys.length > 0) {
+    apiKeys = keys
     console.log(`[GEMINI] Initialized with ${apiKeys.length} API key(s), first key starts: ${apiKeys[0]?.substring(0,8)}...`)
   }
 }
@@ -486,6 +486,11 @@ export function compareAttributesDeterministic(anchorAttrs, catalogAttrs, declar
       note = `Catalog shows "${catalogVal}" but seller declared "${declaredVal}"`
     } else if (acResult === 'skip' && adResult === 'skip' && cdResult === 'skip') {
       status = 'skip'
+    }
+
+    if (status === 'mismatch' && anchorConf === 'HIGH' && declaredVal) {
+      severity = 'HIGH'
+      note = note ? note + ' AI detected with HIGH confidence, overriding to critical severity.' : 'AI detected with HIGH confidence, overriding to critical severity.'
     }
 
     return {
@@ -1096,11 +1101,15 @@ Return ONLY valid JSON with these exact keys:
  * Each image shows the garment on an AI model with proper proportions.
  * Falls back to compositing if Gemini image gen is unavailable.
  */
-export async function generateCatalogImage(imagePaths, attributes, cvOverallLength) {
+export async function generateCatalogImage(imagePaths, attributes, cvOverallLength, sizeChartPath = null) {
   if (!imagePaths || imagePaths.length === 0) return null
   
   const anchorPath = imagePaths[0]
   const parsedPath = path.parse(anchorPath)
+  
+  const imageBytes = fs.readFileSync(anchorPath)
+  const contentHash = crypto.createHash('md5').update(imageBytes.slice(0, 10240)).digest('hex').substring(0, 12)
+  const pregeneratedDir = path.join(process.cwd(), 'uploads', 'pregenerated')
   
   // Build garment description from ALL extracted attributes
   const gt = attributes.garment_type?.value || attributes.garment_type || 'garment'
@@ -1176,10 +1185,50 @@ export async function generateCatalogImage(imagePaths, attributes, cvOverallLeng
   if (apiKeys.length > 0) {
     console.log(`[IMAGE-GEN] Generating 5 AI model catalog images via Gemini...`)
     
+    const IMAGE_MODELS = ['gemini-2.5-flash-image', 'gemini-3.1-flash-image', 'gemini-3.1-flash-lite-image']
+    const IMAGE_MAX_RETRIES = 1
+
     for (let i = 0; i < VIEWS.length; i++) {
       const view = VIEWS[i]
       const outputFile = path.join(process.cwd(), 'uploads', `gen_${parsedPath.name}_${view.name}.png`)
       
+      // Check content-hash pregenerated cache first
+      let pregenFound = false
+      const pythonHeight = modelHeight.replace(/"/g, '');
+      const sizeHash = `${modelSize}_${pythonHeight}`;
+      const pregenFileSize = path.join(pregeneratedDir, `${contentHash}_${sizeHash}_${view.name}.png`);
+      const pregenFileBase = path.join(pregeneratedDir, `${contentHash}_${view.name}.png`);
+      
+      const checkPregen = (filePath, sourceFolder = '') => {
+        if (fs.existsSync(filePath)) {
+          console.log(`[IMAGE-GEN] Using pregenerated ${view.name} view ${sourceFolder ? `from ${sourceFolder}` : ''} (content-hash match)`);
+          fs.copyFileSync(filePath, outputFile);
+          generatedImages.push({
+            view: view.name,
+            url: `http://localhost:3001/uploads/gen_${parsedPath.name}_${view.name}.png`
+          });
+          return true;
+        }
+        return false;
+      };
+
+      if (checkPregen(pregenFileSize) || checkPregen(pregenFileBase)) {
+        pregenFound = true;
+      } else if (fs.existsSync(pregeneratedDir)) {
+        // Also check subfolders
+        const subfolders = fs.readdirSync(pregeneratedDir, { withFileTypes: true }).filter(d => d.isDirectory())
+        for (const folder of subfolders) {
+          const subFileSize = path.join(pregeneratedDir, folder.name, `${contentHash}_${sizeHash}_${view.name}.png`);
+          const subFileBase = path.join(pregeneratedDir, folder.name, `${contentHash}_${view.name}.png`);
+          if (checkPregen(subFileSize, folder.name) || checkPregen(subFileBase, folder.name)) {
+            pregenFound = true;
+            break;
+          }
+        }
+      }
+      
+      if (pregenFound) continue;
+
       // Check cache
       if (fs.existsSync(outputFile)) {
         console.log(`[IMAGE-GEN] Using cached ${view.name} view`)
@@ -1190,59 +1239,88 @@ export async function generateCatalogImage(imagePaths, attributes, cvOverallLeng
         continue
       }
 
-      try {
-        const apiKey = getNextKey() || process.env.GEMINI_API_KEY
-        const ai = new GoogleGenAI({ apiKey: apiKey })
-        const anchorInlineData = await fileToInlineData(anchorPath)
+      let imageGenerated = false
 
-        const response = await ai.models.generateContent({
-          model: 'gemini-2.5-flash-preview-image-generation',
-          contents: [
-            {
-              parts: [
-                anchorInlineData,
-                { text: `Using the garment shown in the reference image above, ${view.prompt}` }
-              ]
+      for (let modelIdx = 0; modelIdx < IMAGE_MODELS.length; modelIdx++) {
+        if (imageGenerated) break;
+        const modelName = IMAGE_MODELS[modelIdx]
+
+        for (let attempt = 0; attempt <= IMAGE_MAX_RETRIES; attempt++) {
+          try {
+            console.log(`[IMAGE-GEN] Trying ${modelName} for ${view.name} view (Attempt ${attempt + 1})...`)
+            const apiKey = getNextKey() || process.env.GEMINI_API_KEY
+            const ai = new GoogleGenAI({ apiKey: apiKey })
+            const anchorInlineData = await fileToInlineData(anchorPath)
+
+            const promptParts = [anchorInlineData]
+            if (sizeChartPath) {
+              promptParts.push(await fileToInlineData(sizeChartPath))
+              promptParts.push({ text: `Analyze the attached size chart to determine the accurate bodily proportions and length for size ${modelSize}. Apply these proportions to the generated model image.` })
             }
-          ],
-          config: { responseModalities: ['TEXT', 'IMAGE'] }
-        })
+            promptParts.push({ text: `Using the garment shown in the reference image above, ${view.prompt}` })
 
-        let imageGenerated = false
+            const response = await ai.models.generateContent({
+              model: modelName,
+              contents: [
+                {
+                  parts: promptParts
+                }
+              ],
+              config: { responseModalities: ['TEXT', 'IMAGE'] }
+            })
 
-        // Extract generated image from response
-        if (response.candidates?.[0]?.content?.parts) {
-          for (const part of response.candidates[0].content.parts) {
-            if (part.inlineData || part.inline_data) {
-              const inlineData = part.inlineData || part.inline_data
-              const imgBuffer = Buffer.from(inlineData.data, 'base64')
-              fs.writeFileSync(outputFile, imgBuffer)
-              generatedImages.push({
-                view: view.name,
-                url: `http://localhost:3001/uploads/gen_${parsedPath.name}_${view.name}.png`
-              })
-              imageGenerated = true
-              console.log(`[IMAGE-GEN] ✅ ${view.name} view generated`)
-              break
+            // Extract generated image from response
+            if (response.candidates?.[0]?.content?.parts) {
+              for (const part of response.candidates[0].content.parts) {
+                if (part.inlineData || part.inline_data) {
+                  const inlineData = part.inlineData || part.inline_data
+                  const imgBuffer = Buffer.from(inlineData.data, 'base64')
+                  fs.writeFileSync(outputFile, imgBuffer)
+                  generatedImages.push({
+                    view: view.name,
+                    url: `http://localhost:3001/uploads/gen_${parsedPath.name}_${view.name}.png`
+                  })
+                  imageGenerated = true
+                  console.log(`[IMAGE-GEN] ✅ ${view.name} view generated using ${modelName}`)
+                  break
+                }
+              }
             }
+
+            if (!imageGenerated) {
+              console.warn(`[IMAGE-GEN] ${view.name} view: no image in response from ${modelName}`)
+              break // Break out of retry loop, try next model
+            } else {
+              break // Success, break out of retry loop
+            }
+          } catch (err) {
+            console.warn(`[IMAGE-GEN] ${view.name} view failed on ${modelName}: ${err.message}`)
+            const msg = err.message || ''
+            
+            if (msg.includes('404') || msg.includes('not found') || msg.includes('does not exist')) {
+              break // Break out of retry loop, try next model
+            }
+            
+            if (msg.includes('429') || msg.includes('quota') || msg.includes('RESOURCE_EXHAUSTED')) {
+              if (attempt < IMAGE_MAX_RETRIES) {
+                const delay = BASE_DELAY_MS * Math.pow(2, attempt)
+                console.warn(`[IMAGE-GEN] Rate limit on ${modelName}, retrying in ${delay}ms...`)
+                await new Promise(r => setTimeout(r, delay))
+                continue
+              } else {
+                break // Exhausted retries, try next model
+              }
+            }
+            
+            // Unknown error, try next model
+            break 
           }
         }
+      }
 
-        if (!imageGenerated) {
-          console.warn(`[IMAGE-GEN] ${view.name} view: no image in response`)
-        }
-
-        // Rate limit prevention: 10 second delay between generations
-        if (i < VIEWS.length - 1) {
-          await new Promise(resolve => setTimeout(resolve, 10000))
-        }
-      } catch (err) {
-        console.warn(`[IMAGE-GEN] ${view.name} view failed: ${err.message}`)
-        // If rate limited, stop trying more views
-        if (err.message?.includes('429') || err.message?.includes('RESOURCE_EXHAUSTED')) {
-          console.warn('[IMAGE-GEN] Rate limited — stopping image generation')
-          break
-        }
+      // Rate limit prevention: 10 second delay between generations
+      if (i < VIEWS.length - 1 && imageGenerated) {
+        await new Promise(resolve => setTimeout(resolve, 10000))
       }
     }
   }

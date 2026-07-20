@@ -68,7 +68,7 @@ export default function Success() {
         </div>
 
         <div style={{ display: 'flex', justifyContent: 'center', gap: 12 }}>
-          <button className="btn btn-outline" onClick={() => nav('/new-listing/upload')}>
+          <button className="btn btn-outline" onClick={() => nav('/new-listing')}>
             Create another listing
           </button>
           <button className="btn btn-primary" onClick={() => nav('/')}>

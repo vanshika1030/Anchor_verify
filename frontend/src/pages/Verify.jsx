@@ -14,6 +14,7 @@ const ATTR_LABELS = {
   sleeve_length: 'Sleeve length', neck_type: 'Neck type', silhouette: 'Silhouette', fit: 'Fit',
   embellishment: 'Embellishment', transparency: 'Transparency', hemline: 'Hemline',
   occasion_style: 'Occasion / style', motif_description: 'Motif / print', closure_type: 'Closure',
+  size_chart_length: 'Size Chart Length',
   structural_features: 'Features', model_apparent_height: 'Model height (detected)',
   model_apparent_build: 'Model build (detected)', model_build: 'Model build (CLIP)',
   model_height_range: 'Model height (CLIP)', cv_overall_length: 'Length (geometric)',
@@ -22,7 +23,7 @@ const ATTR_LABELS = {
 export default function Verify() {
   const nav = useNavigate()
   const {
-    anchorFront, anchorBack, anchorCloseup,
+    anchorFront, anchorBack, anchorCloseup, sizeChart, sizeChartMeasurements,
     catalogFiles, catalogPreviews, mode, confirmedAttrs, setConfirmedAttrs,
     anchorExtracted, setCatalogExtracted,
     comparisonResult, setComparisonResult,
@@ -42,6 +43,7 @@ export default function Verify() {
   const [generatedMetadata, setGeneratedMetadata] = useState(null)
   const [corrections, setCorrections] = useState(null)
   const [actualMode, setActualMode] = useState(mode)
+  const [fabricReExtracted, setFabricReExtracted] = useState(null)
   
   // Simulated checklist progress
   const [checklistStep, setChecklistStep] = useState(0)
@@ -86,6 +88,8 @@ export default function Verify() {
       const result = await runVerification({
         anchorFiles,
         catalogFiles: catalogFiles || [],
+        sizeChartFile: sizeChart?.file || null,
+        sizeChartMeasurements: sizeChartMeasurements || null,
         declaredAttrs: confirmedAttrs || {},
         anchorExtracted: anchorExtracted || {},
         mode: mode,
@@ -147,6 +151,7 @@ export default function Verify() {
             category: attrs.garment_type || '',
             brand_name: confirmedAttrs?.brand || 'Brand',
             attributes: attrs,
+            verdict: v,
             verification_status: v?.status?.toLowerCase() || 'unverified',
             verification_score: v?.overall_similarity || null,
             anchor_image_url: anchorFront?.preview || null,
@@ -212,7 +217,7 @@ export default function Verify() {
           <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 6, color: 'var(--danger)' }}>Verification failed</div>
           <div style={{ color: 'var(--text-secondary)', fontSize: 13, marginBottom: 16, lineHeight: 1.6 }}>{error}</div>
           <div style={{ display: 'flex', gap: 10, justifyContent: 'center' }}>
-            <button className="btn btn-outline" onClick={() => nav('/new-listing/upload')}>Go back</button>
+            <button className="btn btn-outline" onClick={() => nav('/new-listing')}>Go back</button>
             <button className="btn btn-primary" onClick={doVerification}>Retry verification</button>
           </div>
         </div>
@@ -220,13 +225,36 @@ export default function Verify() {
     )
   }
 
-  // ── Results ──
-  const rows = comparisonResult || []
+  // ────────────── Results ──────────────
+  // Patch rows dynamically if corrections were accepted
+  const rows = (comparisonResult || []).map(r => {
+    const acceptedVal = acceptedCorrections[r.key]
+    if (acceptedVal && acceptedVal !== 'IGNORED') {
+      return {
+        ...r,
+        declared_value: acceptedVal,
+        status: 'match',
+        note: 'Fixed by user accepting AI suggestion'
+      }
+    }
+    return r
+  })
+
   const failCount = rows.filter(r => r.status === 'mismatch' && r.severity === 'HIGH').length + (modelIssues?.length || 0)
   const warnCount = rows.filter(r => r.status === 'mismatch' && r.severity !== 'HIGH').length + rows.filter(r => r.status === 'warning').length
   const passCount = rows.filter(r => r.status === 'match').length
   const skipCount = rows.filter(r => r.status === 'skip').length
-  const v = verdict || { status: 'PASS', reason: 'Completed', critical_issues: [] }
+
+  // Dynamically update verdict status based on un-fixed issues
+  let v = verdict || { status: 'PASS', reason: 'Completed', critical_issues: [] }
+  if (v.status !== 'UNVERIFIED') {
+    if (failCount === 0) {
+      if (warnCount > 0) v = { ...v, status: 'WARNING', reason: 'Verification passed with warnings' }
+      else v = { ...v, status: 'PASS', reason: 'Verification passed successfully' }
+    } else {
+      v = { ...v, status: 'FAIL', reason: 'Critical issues detected' }
+    }
+  }
 
   return (
     <div style={{ maxWidth: 960, margin: '0 auto' }}>
@@ -565,7 +593,7 @@ export default function Verify() {
                       {r.status === 'match' ? 'Match' :
                        r.status === 'mismatch' ? `Mismatch \u00B7 ${r.severity}` :
                        r.status === 'warning' ? `Warning \u00B7 ${r.severity || 'LOW'}` :
-                       'Not detected'}
+                       r.status === 'skip' ? 'Missing Input' : 'Not detected'}
                     </span>
                   </td>
                 </tr>
@@ -588,15 +616,34 @@ export default function Verify() {
         <div className="card" style={{ borderLeft: '4px solid #e65100', marginTop: 16, padding: 16, background: '#fff3e0' }}>
           <div style={{ fontWeight: 600, color: '#e65100', marginBottom: 8 }}>Fabric Not Identified</div>
           <div style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 12 }}>We couldn't confidently identify the fabric from your images. Upload a close-up photo of the fabric texture for better accuracy.</div>
-          <label className="btn btn-outline" style={{ cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-            <input type="file" accept="image/*" hidden onChange={(e) => {
-              if (e.target.files && e.target.files[0]) {
-                const url = URL.createObjectURL(e.target.files[0]);
-                alert('Fabric image uploaded. (Re-extraction TODO)');
-              }
-            }} />
-            Upload Fabric Close-up
-          </label>
+          {fabricReExtracted ? (
+            <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--success)' }}>
+              <CheckCircle size={14} style={{ verticalAlign: -2, marginRight: 4 }} />
+              Fabric identified: {fabricReExtracted}
+            </div>
+          ) : (
+            <label className="btn btn-outline" style={{ cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+              <input type="file" accept="image/*" hidden onChange={async (e) => {
+                const file = e.target.files && e.target.files[0];
+                if (file) {
+                  try {
+                    const formData = new FormData();
+                    formData.append('images', file);
+                    const res = await fetch('http://localhost:3001/api/extract/anchor', {
+                      method: 'POST',
+                      body: formData
+                    });
+                    const data = await res.json();
+                    const fabricVal = data.attributes?.fabric_appearance?.value || data.attributes?.fabric_appearance || 'Unknown';
+                    setFabricReExtracted(fabricVal);
+                  } catch (err) {
+                    console.error('Failed to extract fabric:', err);
+                  }
+                }
+              }} />
+              Upload Fabric Close-up
+            </label>
+          )}
         </div>
       )}
 
@@ -668,7 +715,7 @@ export default function Verify() {
           {v.status === 'WARNING' && `${warnCount} warning${warnCount > 1 ? 's' : ''} — publishing is allowed`}
         </div>
         <div className="action-btns">
-          <button className="btn btn-outline btn-sm" onClick={() => nav('/new-listing/upload')}>
+          <button className="btn btn-outline btn-sm" onClick={() => nav('/new-listing')}>
             Replace images
           </button>
           {(v.status === 'FAIL' || v.status === 'UNVERIFIED') ? (

@@ -3,9 +3,9 @@ import { ShieldCheck, Image, FileText, ArrowRight, CheckCircle, XCircle, AlertTr
 import ExcelView from '../components/ExcelView'
 
 const STEPS = [
-  { icon: Image, title: 'Upload anchor photo', desc: 'Your real product — the ground truth' },
-  { icon: FileText, title: 'Confirm attributes', desc: 'Review auto-detected, fill physical specs' },
-  { icon: ShieldCheck, title: 'Verify & publish', desc: 'Automatic gate before going live' },
+  { icon: Image, title: 'AI Extraction', desc: 'Automatically extract attributes from raw product photos' },
+  { icon: ShieldCheck, title: 'Smart Verification', desc: 'Compare your catalog data against physical reality' },
+  { icon: FileText, title: 'Catalog Generation', desc: 'Auto-generate Myntra-compliant catalog entries' },
 ]
 
 const RECENT = [
@@ -22,17 +22,25 @@ export default function Landing() {
   return (
     <div style={{ maxWidth: 860, margin: '0 auto' }}>
       {/* Hero */}
-      <div className="card" style={{ textAlign: 'center', padding: '40px 32px' }}>
-        <ShieldCheck size={36} color="var(--accent)" style={{ marginBottom: 12 }} />
-        <h2 style={{ fontSize: 24, fontWeight: 700, letterSpacing: '-0.02em', marginBottom: 6 }}>
+      <div style={{ 
+        textAlign: 'center', 
+        padding: '60px 40px',
+        background: 'linear-gradient(135deg, #282c3f 0%, #1a1d26 100%)',
+        borderRadius: '16px',
+        color: 'white',
+        marginBottom: '32px',
+        boxShadow: '0 12px 32px rgba(0,0,0,0.1)'
+      }}>
+        <ShieldCheck size={48} color="var(--accent)" style={{ marginBottom: 16 }} />
+        <h2 style={{ fontSize: 32, fontWeight: 800, letterSpacing: '-0.02em', marginBottom: 12 }}>
           Anchor Verification
         </h2>
-        <p style={{ color: 'var(--text-secondary)', maxWidth: 480, margin: '0 auto 20px', lineHeight: 1.7, fontSize: 14 }}>
+        <p style={{ color: '#9CA0AE', maxWidth: 540, margin: '0 auto 28px', lineHeight: 1.7, fontSize: 16 }}>
           Every listing is verified before going live. Anchor checks that your catalog images
           and metadata accurately represent your real product.
         </p>
-        <button className="btn btn-primary" onClick={() => nav('/new-listing/upload')} style={{ minWidth: 220 }}>
-          Create verified listing <ArrowRight size={14} />
+        <button className="btn btn-primary" onClick={() => nav('/new-listing')} style={{ minWidth: 220, padding: '14px 28px', fontSize: 16 }}>
+          Start Listing <ArrowRight size={16} />
         </button>
       </div>
 

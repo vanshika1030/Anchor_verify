@@ -40,7 +40,15 @@ router.post('/', async (req, res) => {
     const anchorFiles = (req.files || []).filter(f => f.fieldname === 'anchorImages')
     const catalogFiles = (req.files || []).filter(f => f.fieldname === 'catalogImages')
     const anchorPaths = anchorFiles.map(f => f.path)
-    const catalogPaths = catalogFiles.map(f => f.path)
+    let catalogPaths = catalogFiles.map(f => f.path)
+
+    if (catalogPaths.length === 0 && req.body.catalogPaths) {
+      const parsedPaths = typeof req.body.catalogPaths === 'string' ? JSON.parse(req.body.catalogPaths) : req.body.catalogPaths
+      catalogPaths = parsedPaths.map(p => {
+        if (p.startsWith('http://localhost:3001/')) return p.replace('http://localhost:3001/', '')
+        return p
+      })
+    }
 
     const isGenerateMode = mode === 'generate'
     
@@ -210,8 +218,20 @@ router.post('/', async (req, res) => {
     const modelSize = parsedDeclared.model_size || ''
     
     // Existing deterministic proportion check
-    const proportionIssues = checkModelProportions(catalogAttrs, modelHeight, modelSize)
-    modelIssues.push(...proportionIssues)
+    if (!modelHeight || !modelSize) {
+      console.log(`[LAYER 3.6] Missing model size/height. Failing verification.`)
+      modelIssues.push({
+        attr: 'Model Proportions',
+        declared: 'Not provided',
+        detected: 'N/A',
+        confidence: 'HIGH',
+        severity: 'HIGH',
+        note: 'Model height and size must be provided to verify proportions and fit. Please update your listing details.'
+      })
+    } else {
+      const proportionIssues = checkModelProportions(catalogAttrs, modelHeight, modelSize)
+      modelIssues.push(...proportionIssues)
+    }
 
     // NEW: Check catalog CLIP-detected body proportions against seller's declaration
     if (catalogAttrs.model_build && modelSize) {
@@ -271,6 +291,66 @@ router.post('/', async (req, res) => {
       }
     }
 
+    // ── Layer 3.8: Size Chart Cross-Validation ────
+    if (req.body.sizeChartMeasurements) {
+      try {
+        const sizeChart = JSON.parse(req.body.sizeChartMeasurements)
+        const declaredSize = parsedDeclared.model_size || ''
+        const declaredLength = parsedDeclared.overall_length || ''
+        const sizeKey = declaredSize.toUpperCase().replace(/[^A-Z]/g, '')
+        
+        if (sizeKey && sizeChart[sizeKey] && sizeChart[sizeKey].length) {
+          const lengthVal = sizeChart[sizeKey].length
+          let expected = []
+          let fail = false
+          
+          if (lengthVal < 20) {
+            expected = ['Crop']
+            if (declaredLength.includes('Long') || declaredLength.includes('Maxi')) fail = true
+          } else if (lengthVal >= 20 && lengthVal < 24) {
+            expected = ['Crop', 'Hip Length']
+          } else if (lengthVal >= 24 && lengthVal <= 28) {
+            expected = ['Hip Length', 'Regular']
+          } else if (lengthVal > 28 && lengthVal <= 34) {
+            expected = ['Regular', 'Knee Length']
+          } else {
+            expected = ['Knee Length', 'Ankle Length', 'Maxi']
+          }
+          
+          if (lengthVal > 26 && declaredLength.includes('Crop')) {
+            fail = true
+          }
+          
+          if (fail) {
+            console.log(`[LAYER 3.8] Size chart mismatch: length ${lengthVal} doesn't match declared '${declaredLength}'`)
+            modelIssues.push({
+              attr: 'Size Chart Length',
+              declared: declaredLength,
+              detected: `${lengthVal} inches (from size ${sizeKey})`,
+              confidence: 'HIGH',
+              severity: 'HIGH',
+              note: `Size chart shows length ${lengthVal} for size ${sizeKey}, which contradicts the declared length '${declaredLength}'. Expected: ${expected.join(' or ')}.`
+            })
+            comparison.push({
+              key: 'size_chart_length',
+              label: 'Size Chart Length',
+              anchor: `${lengthVal} in`,
+              catalog: `${lengthVal} in`,
+              declared: declaredLength,
+              status: 'mismatch',
+              severity: 'HIGH',
+              note: `Contradiction between size chart (${lengthVal} in) and declared length (${declaredLength}).`,
+              source: 'SizeChart'
+            })
+          } else {
+            console.log(`[LAYER 3.8] ✅ Size chart length ${lengthVal} aligns with declared '${declaredLength}'`)
+          }
+        }
+      } catch (err) {
+        console.error('[LAYER 3.8] Failed to parse size chart measurements:', err)
+      }
+    }
+
     // ══════════════════════════════════════════════════════════════════
     // LAYER 4: BAYESIAN MATHEMATICAL FUSION
     // Fuse ALL evidence BEFORE generating verdict (not after!)
@@ -320,7 +400,10 @@ router.post('/', async (req, res) => {
 
       // Image compositing (Local CV, independent of LLM rate limits)
       try {
-        const imageUrl = await generateCatalogImage(anchorPaths, parsedDeclared, parsedAnchor.cv_overall_length)
+        const sizeChartFile = (req.files || []).find(f => f.fieldname === 'sizeChart')
+        const sizeChartPath = sizeChartFile ? sizeChartFile.path : null
+        
+        const imageUrl = await generateCatalogImage(anchorPaths, parsedDeclared, parsedAnchor.cv_overall_length, sizeChartPath)
         if (generatedMetadata) generatedMetadata.generated_image_url = imageUrl
         console.log(`[LAYER 5] Catalog image generated: ${imageUrl}`)
       } catch (imgErr) {

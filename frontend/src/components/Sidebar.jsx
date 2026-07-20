@@ -1,5 +1,5 @@
 import { useLocation, useNavigate } from 'react-router-dom'
-import { LayoutDashboard, Package, PlusCircle, BarChart3, CreditCard, Settings, ShieldCheck } from 'lucide-react'
+import { LayoutDashboard, Package, PlusCircle, BarChart3, CreditCard, Settings, ShieldCheck, Anchor } from 'lucide-react'
 import { useApp } from '../AppContext'
 
 const NAV = [
@@ -20,8 +20,11 @@ export default function Sidebar() {
   return (
     <aside className="sidebar">
       <div className="sidebar-brand">
-        <h1><span>m</span>yntra</h1>
-        <p>Partner Portal</p>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <Anchor size={24} color="var(--accent)" />
+          <h1>Anchor <span>Verify</span></h1>
+        </div>
+        <p>Myntra Partner Portal</p>
       </div>
 
       <nav className="sidebar-nav">
@@ -43,8 +46,8 @@ export default function Sidebar() {
         <div className="nav-section">Quality tools</div>
 
         <div
-          className={`nav-link ${loc.pathname === '/verify' ? 'active' : ''}`}
-          onClick={() => nav('/verify')}
+          className={`nav-link ${loc.pathname === '/anchor-intro' ? 'active' : ''}`}
+          onClick={() => nav('/anchor-intro')}
         >
           <ShieldCheck className="icon" size={16} />
           Anchor Verification

@@ -6,180 +6,157 @@ import fs from 'fs'
 import path from 'path'
 
 const router = Router()
-const csvUpload = multer({ dest: 'uploads/csv/', limits: { fileSize: 10 * 1024 * 1024 } })
+
+const uploadsDir = path.join(process.cwd(), 'uploads');
+if (!fs.existsSync(uploadsDir)) {
+  fs.mkdirSync(uploadsDir, { recursive: true });
+}
+const csvUploadDir = path.join(process.cwd(), 'uploads', 'csv');
+if (!fs.existsSync(csvUploadDir)) {
+  fs.mkdirSync(csvUploadDir, { recursive: true });
+}
+
+const csvUpload = multer({ dest: csvUploadDir, limits: { fileSize: 10 * 1024 * 1024 } })
 
 // In-memory store (production: Redis/DB)
 const csvStore = new Map()
 
-// ─── Myntra Seller Portal Template ───────────────────────────────────
-// Based on official Myntra Partner Portal DIY Template v8 (Apparel)
-// Columns grouped by section as in the real template
-
-const MYNTRA_TEMPLATE = {
-  // Section 1: Business Information (Green header in template)
-  business: [
-    'styleId',
-    'styleGroupId',
-    'vendorSkuCode',
-    'vendorArticleNumber',
-    'brand',
-    'CountryOfOrigin1',
-    'CountryOfOrigin2',
-    'CountryOfOrigin3',
-    'CountryOfOrigin4',
-    'CountryOfOrigin5',
-    'articleType',
-    'BrandSize',
-    'StandardSize',
-    'isStandardSizePresentOnLabel',
-    'BrandColour',
-    'GTIN',
-    'HSN',
-    'SKUCode',
-    'MRP',
-    'manufacturerName',
-    'manufacturerAddress',
-    'packerName',
-    'packerAddress',
-  ],
-  // Section 2: Discoverability & Product Description (Pink header)
-  discoverability: [
-    'gender',
-    'ageGroup',
-    'fashionType',
-    'mfnType',
-    'Usage',
-    'Year',
-    'season',
-    'ProductDetails',
-    'styleNote',
-    'materialCareDescription',
-    'sizeAndFitDescription',
-    'productDescription',
-    'productDisplayName',
-    'tags',
-    'addedDate',
-  ],
-  // Section 3: Apparel-specific attributes
-  apparel: [
-    'ColorVariantGroup',
-    'Fabric',
-    'FabricComposition',
-    'PrintOrPatternType',
-    'NeckType',
-    'SleeveLength',
-    'SleeveStyling',
-    'Fit',
-    'Length',
-    'Occasion',
-    'Silhouette',
-    'Hemline',
-    'Embellishment',
-    'Transparency',
-    'DesignStyling',
-    'Closure',
-    'WashCare',
-    'Type',
-  ],
-  // Section 4: Measurements (in inches)
-  measurements: [
-    'AcrossShoulder',
-    'BustOrChest',
-    'FrontLength',
-    'SleeveLen',
-    'ToFitBust',
-    'Waist',
-    'Hip',
-  ],
-  // Section 5: Model & Images
-  model_images: [
-    'modelHeight',
-    'modelSizeWorn',
-    'image1',
-    'image2',
-    'image3',
-    'image4',
-    'image5',
-    'image6',
-  ],
-  // Section 6: Anchor verification (our addition)
-  anchor: [
-    'anchorVerificationStatus',
-    'anchorSimilarityScore',
-    'anchorMismatchCount',
-    'anchorVerificationNotes',
-    'anchorVerifiedAt',
-  ],
-}
-
-const ALL_COLUMNS = [
-  ...MYNTRA_TEMPLATE.business,
-  ...MYNTRA_TEMPLATE.discoverability,
-  ...MYNTRA_TEMPLATE.apparel,
-  ...MYNTRA_TEMPLATE.measurements,
-  ...MYNTRA_TEMPLATE.model_images,
-  ...MYNTRA_TEMPLATE.anchor,
-]
-
-// Sample data row for Kurta (for template preview)
-const SAMPLE_KURTA = {
-  styleId: '', styleGroupId: 'KRT-GRP-001', vendorSkuCode: 'KRT-BLK-S',
-  vendorArticleNumber: '1', brand: 'YourBrand',
-  CountryOfOrigin1: 'India', CountryOfOrigin2: 'India',
-  CountryOfOrigin3: 'India', CountryOfOrigin4: 'India', CountryOfOrigin5: 'India',
-  articleType: 'Kurta', BrandSize: 'S', StandardSize: 'S',
-  isStandardSizePresentOnLabel: 'Yes', BrandColour: 'Black',
-  GTIN: '', HSN: '62114200', SKUCode: '', MRP: '1499',
-  manufacturerName: 'Example Manufacturer Pvt Ltd',
-  manufacturerAddress: '123 Industrial Area, Delhi, 110001',
-  packerName: 'Example Manufacturer Pvt Ltd',
-  packerAddress: '123 Industrial Area, Delhi, 110001',
-  gender: 'Women', ageGroup: 'Adults-Women', fashionType: 'Fashion',
-  mfnType: 'In', Usage: 'Casual', Year: '2025', season: 'Summer',
-  ProductDetails: '', styleNote: '',
-  materialCareDescription: 'Machine Wash Cold, Do Not Bleach',
-  sizeAndFitDescription: 'Suitable for all body types. Model is wearing size S.',
-  productDescription: 'Black printed kurta for women, comfortable cotton fabric with traditional motifs.',
-  productDisplayName: 'YourBrand Black Printed Cotton Kurta',
-  tags: 'kurta, black kurta, cotton kurta, printed kurta, women kurta',
-  addedDate: '',
-  ColorVariantGroup: '', Fabric: 'Cotton', FabricComposition: '100% Cotton',
-  PrintOrPatternType: 'Printed', NeckType: 'Round Neck',
-  SleeveLength: 'Three-Quarter Sleeve', SleeveStyling: 'Regular',
-  Fit: 'Regular', Length: 'Calf Length', Occasion: 'Casual',
-  Silhouette: 'A-Line', Hemline: 'Curved', Embellishment: 'No Embellishment',
-  Transparency: 'Opaque', DesignStyling: 'Regular', Closure: 'Slip-On',
-  WashCare: 'Machine Wash', Type: 'Ethnic',
-  AcrossShoulder: '14', BustOrChest: '36', FrontLength: '46',
-  SleeveLen: '18', ToFitBust: '34', Waist: '32', Hip: '38',
-  modelHeight: "5'6\"", modelSizeWorn: 'S',
-  image1: '', image2: '', image3: '', image4: '', image5: '', image6: '',
-  anchorVerificationStatus: '', anchorSimilarityScore: '',
-  anchorMismatchCount: '', anchorVerificationNotes: '', anchorVerifiedAt: '',
-}
+const CATEGORIES = {
+  Topwear: {
+    columns: [
+      'styleId', 'productTitle', 'brand', 'brandColour', 'primaryColour', 'secondaryColour',
+      'gender', 'articleType', 'neckType', 'sleeveLength', 'fabric', 'pattern', 'fit',
+      'occasion', 'garmentLength', 'hemline', 'transparency', 'embellishment', 'washCare',
+      'mrp', 'sellingPrice', 'description', 'sizeChart_S_chest', 'sizeChart_S_length',
+      'sizeChart_M_chest', 'sizeChart_M_length', 'sizeChart_L_chest', 'sizeChart_L_length',
+      'sizeChart_XL_chest', 'sizeChart_XL_length', 'catalogImage_front', 'catalogImage_back',
+      'catalogImage_side', 'catalogImage_closeup', 'catalogImage_full',
+      'modelSize', 'modelHeight'
+    ],
+    sample: {
+      styleId: 'AV-TS-001', productTitle: 'Men Graphic Print Cotton T-Shirt', brand: 'Roadster',
+      brandColour: 'Navy Blue', primaryColour: 'Blue', secondaryColour: 'White', gender: 'Men',
+      articleType: 'T-Shirt', neckType: 'Round Neck', sleeveLength: 'Short Sleeve', fabric: 'Cotton',
+      pattern: 'Graphic Print', fit: 'Regular', occasion: 'Casual', garmentLength: 'Regular',
+      hemline: 'Straight', transparency: 'Opaque', embellishment: 'None', washCare: 'Machine Wash',
+      mrp: 999, sellingPrice: 699, description: 'Stylish graphic print t-shirt...',
+      sizeChart_S_chest: 38, sizeChart_S_length: 26, sizeChart_M_chest: 40, sizeChart_M_length: 27,
+      sizeChart_L_chest: 42, sizeChart_L_length: 28, sizeChart_XL_chest: 44, sizeChart_XL_length: 29,
+      catalogImage_front: 'http://localhost:3001/uploads/catalog_front.jpg',
+      catalogImage_back: 'http://localhost:3001/uploads/catalog_back.jpg',
+      catalogImage_side: 'http://localhost:3001/uploads/catalog_side.jpg',
+      catalogImage_closeup: 'http://localhost:3001/uploads/catalog_closeup.jpg',
+      catalogImage_full: 'http://localhost:3001/uploads/catalog_full.jpg',
+      modelSize: 'M',
+      modelHeight: '6\'0"'
+    }
+  },
+  Bottomwear: {
+    columns: [
+      'styleId', 'productTitle', 'brand', 'brandColour', 'primaryColour', 'secondaryColour',
+      'gender', 'articleType', 'waistRise', 'legStyle', 'fabric', 'pattern', 'fit', 'occasion',
+      'garmentLength', 'closureType', 'stretch', 'washCare', 'mrp', 'sellingPrice', 'description',
+      'sizeChart_28_waist', 'sizeChart_28_length', 'sizeChart_30_waist', 'sizeChart_30_length',
+      'sizeChart_32_waist', 'sizeChart_32_length', 'sizeChart_34_waist', 'sizeChart_34_length',
+      'catalogImage_front', 'catalogImage_back', 'catalogImage_side', 'catalogImage_closeup',
+      'catalogImage_full', 'modelSize', 'modelHeight'
+    ],
+    sample: {
+      styleId: 'AV-JN-001', productTitle: 'Men Slim Fit Stretchable Jeans', brand: 'Wrangler',
+      brandColour: 'Dark Blue', primaryColour: 'Blue', secondaryColour: '', gender: 'Men',
+      articleType: 'Jeans', waistRise: 'Mid Rise', legStyle: 'Slim', fabric: 'Denim', pattern: 'Solid',
+      fit: 'Slim Fit', occasion: 'Casual', garmentLength: 'Full Length', closureType: 'Zip',
+      stretch: 'Stretchable', washCare: 'Machine Wash', mrp: 2999, sellingPrice: 1499,
+      description: 'Comfortable slim fit stretchable jeans...',
+      sizeChart_28_waist: 28, sizeChart_28_length: 40, sizeChart_30_waist: 30, sizeChart_30_length: 41,
+      sizeChart_32_waist: 32, sizeChart_32_length: 42, sizeChart_34_waist: 34, sizeChart_34_length: 43,
+      catalogImage_front: 'http://localhost:3001/uploads/catalog_front.jpg',
+      catalogImage_back: 'http://localhost:3001/uploads/catalog_back.jpg',
+      catalogImage_side: 'http://localhost:3001/uploads/catalog_side.jpg',
+      catalogImage_closeup: 'http://localhost:3001/uploads/catalog_closeup.jpg',
+      catalogImage_full: 'http://localhost:3001/uploads/catalog_full.jpg',
+      modelSize: '32',
+      modelHeight: '6\'1"'
+    }
+  },
+  Dresses: {
+    columns: [
+      'styleId', 'productTitle', 'brand', 'brandColour', 'primaryColour', 'secondaryColour',
+      'gender', 'articleType', 'neckType', 'sleeveLength', 'fabric', 'pattern', 'fit', 'occasion',
+      'garmentLength', 'hemline', 'transparency', 'embellishment', 'dupatta', 'washCare', 'mrp',
+      'sellingPrice', 'description', 'sizeChart_S_chest', 'sizeChart_S_length', 'sizeChart_M_chest',
+      'sizeChart_XL_length', 'catalogImage_front', 'catalogImage_back', 'catalogImage_side',
+      'catalogImage_closeup', 'catalogImage_full', 'modelSize', 'modelHeight'
+    ],
+    sample: {
+      styleId: 'AV-KT-001', productTitle: 'Women Printed Cotton Kurti', brand: 'Libas',
+      brandColour: 'Pink', primaryColour: 'Pink', secondaryColour: 'Gold', gender: 'Women',
+      articleType: 'Kurti', neckType: 'V-Neck', sleeveLength: 'Three-Quarter', fabric: 'Cotton',
+      pattern: 'Printed', fit: 'Regular', occasion: 'Festive', garmentLength: 'Knee Length',
+      hemline: 'Curved', transparency: 'Opaque', embellishment: 'Zari', dupatta: 'Without Dupatta',
+      washCare: 'Hand Wash', mrp: 1999, sellingPrice: 899, description: 'Beautiful printed kurti...',
+      sizeChart_S_chest: 36, sizeChart_S_length: 42, sizeChart_M_chest: 38, sizeChart_M_length: 42,
+      sizeChart_L_chest: 40, sizeChart_L_length: 44, sizeChart_XL_chest: 42, sizeChart_XL_length: 44,
+      catalogImage_front: 'http://localhost:3001/uploads/catalog_front.jpg',
+      catalogImage_back: 'http://localhost:3001/uploads/catalog_back.jpg',
+      catalogImage_side: 'http://localhost:3001/uploads/catalog_side.jpg',
+      catalogImage_closeup: 'http://localhost:3001/uploads/catalog_closeup.jpg',
+      catalogImage_full: 'http://localhost:3001/uploads/catalog_full.jpg',
+      modelSize: 'S',
+      modelHeight: '5\'6"'
+    }
+  },
+  Footwear: {
+    columns: [
+      'styleId', 'productTitle', 'brand', 'brandColour', 'primaryColour', 'secondaryColour',
+      'gender', 'articleType', 'material', 'soleMaterial', 'toeShape', 'heelHeight', 'occasion',
+      'closureType', 'washCare', 'mrp', 'sellingPrice', 'description', 'sizeChart_6', 'sizeChart_7',
+      'sizeChart_8', 'sizeChart_9', 'sizeChart_10', 'catalogImage_front', 'catalogImage_back',
+      'catalogImage_side', 'catalogImage_closeup', 'catalogImage_full'
+    ],
+    sample: {
+      styleId: 'AV-FW-001', productTitle: 'Men Casual White Sneakers', brand: 'Puma',
+      brandColour: 'White', primaryColour: 'White', secondaryColour: 'Black', gender: 'Men',
+      articleType: 'Sneakers', material: 'Synthetic Leather', soleMaterial: 'Rubber', toeShape: 'Round',
+      heelHeight: 'Flat', occasion: 'Casual', closureType: 'Lace-Up', washCare: 'Wipe with clean cloth',
+      mrp: 3999, sellingPrice: 2499, description: 'Classic white sneakers...',
+      sizeChart_6: 25, sizeChart_7: 26, sizeChart_8: 27, sizeChart_9: 28, sizeChart_10: 29,
+      catalogImage_front: 'http://localhost:3001/uploads/catalog_front.jpg',
+      catalogImage_back: 'http://localhost:3001/uploads/catalog_back.jpg',
+      catalogImage_side: 'http://localhost:3001/uploads/catalog_side.jpg',
+      catalogImage_closeup: 'http://localhost:3001/uploads/catalog_closeup.jpg',
+      catalogImage_full: 'http://localhost:3001/uploads/catalog_full.jpg'
+    }
+  }
+};
 
 // ─── Routes ──────────────────────────────────────────────────────────
 
-// GET /api/csv/template — download empty Myntra template CSV with sample row
+// GET /api/csv/template — download empty template CSV with sample row for specific category
 router.get('/template', (req, res) => {
-  const csv = stringify([ALL_COLUMNS, Object.values(SAMPLE_KURTA)], { header: false })
+  const categoryName = req.query.category || 'Topwear';
+  const category = CATEGORIES[categoryName] || CATEGORIES['Topwear'];
+
+  const csv = stringify([category.sample], { header: true, columns: category.columns })
   res.setHeader('Content-Type', 'text/csv')
-  res.setHeader('Content-Disposition', 'attachment; filename=myntra_apparel_template.csv')
+  res.setHeader('Content-Disposition', `attachment; filename=${categoryName.toLowerCase()}_template.csv`)
   res.send(csv)
 })
 
 // GET /api/csv/columns — get column structure for UI rendering
 router.get('/columns', (req, res) => {
+  const categoryName = req.query.category || 'Topwear';
+  const category = CATEGORIES[categoryName] || CATEGORIES['Topwear'];
+
   res.json({
     success: true,
-    sections: MYNTRA_TEMPLATE,
-    allColumns: ALL_COLUMNS,
-    sampleRow: SAMPLE_KURTA,
+    allColumns: category.columns,
+    sampleRow: category.sample,
   })
 })
 
 // POST /api/csv/upload — upload a CSV file
-router.post('/upload', csvUpload.single('file'), (req, res) => {
+router.post('/upload', csvUpload.single('file'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: 'No file uploaded' })
 
@@ -188,18 +165,50 @@ router.post('/upload', csvUpload.single('file'), (req, res) => {
     try {
       records = parse(content, { columns: true, skip_empty_lines: true, trim: true, relax_column_count: true })
     } catch (parseErr) {
-      // Try without header row (raw Myntra template has version row + section headers)
       const lines = content.split('\n').filter(l => l.trim())
-      // Find the row that looks like headers (contains styleId or vendorSkuCode)
-      let headerIdx = lines.findIndex(l => l.toLowerCase().includes('styleid') || l.toLowerCase().includes('vendorskucode'))
+      let headerIdx = lines.findIndex(l => l.toLowerCase().includes('styleid'))
       if (headerIdx === -1) headerIdx = 0
       const cleaned = lines.slice(headerIdx).join('\n')
       records = parse(cleaned, { columns: true, skip_empty_lines: true, trim: true, relax_column_count: true })
     }
 
     const sessionId = req.body.sessionId || Date.now().toString()
+
+    // Download images for each record if they start with catalogImage_
+    for (let i = 0; i < records.length; i++) {
+      const row = records[i];
+      for (const key of Object.keys(row)) {
+        if (key.startsWith('catalogImage_') && row[key]) {
+          const url = row[key];
+          if (url.startsWith('http://') || url.startsWith('https://')) {
+            const view = key.replace('catalogImage_', '');
+            const filename = `csv_${sessionId}_row${i}_${view}.jpg`;
+            const localPath = path.join(uploadsDir, filename);
+            
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 10000);
+            try {
+              const response = await fetch(url, { signal: controller.signal });
+              if (response.ok) {
+                const arrayBuffer = await response.arrayBuffer();
+                const buffer = Buffer.from(arrayBuffer);
+                fs.writeFileSync(localPath, buffer);
+                row[key] = `uploads/${filename}`; // Replace with local path
+              } else {
+                console.warn(`Failed to download ${url}: ${response.statusText}`);
+              }
+            } catch (e) {
+              console.warn(`Failed to download ${url}: ${e.message}`);
+            } finally {
+              clearTimeout(timeoutId);
+            }
+          }
+        }
+      }
+    }
+
     csvStore.set(sessionId, {
-      original: records,
+      original: JSON.parse(JSON.stringify(records)),
       current: JSON.parse(JSON.stringify(records)),
       generated: null,
       published: null,
@@ -272,7 +281,7 @@ router.get('/:sessionId/download/:stage', (req, res) => {
 
   const csv = stringify(rows, { header: true })
   res.setHeader('Content-Type', 'text/csv')
-  res.setHeader('Content-Disposition', `attachment; filename=myntra_${stage}_${Date.now()}.csv`)
+  res.setHeader('Content-Disposition', `attachment; filename=${stage}_${Date.now()}.csv`)
   res.send(csv)
 })
 

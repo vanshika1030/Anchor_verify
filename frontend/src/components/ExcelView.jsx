@@ -84,7 +84,7 @@ export default function ExcelView() {
       neck_type: rowData.NeckType || '',
       fit: rowData.Fit || '',
     })
-    nav('/new-listing/upload')
+    nav('/new-listing')
   }
 
   return (

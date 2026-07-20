@@ -32,23 +32,24 @@ export default function Dashboard() {
   };
 
   const renderBadge = (status) => {
-    if (status === 'pass' || status === 'verified') {
+    const s = (status || '').toLowerCase();
+    if (s === 'pass' || s === 'verified') {
       return (
         <div className="badge badge-pass" style={{ position: 'absolute', top: 8, right: 8 }}>
-          <ShieldCheck size={12} /> Verified
+          <ShieldCheck size={12} /> PASS
         </div>
       );
     }
-    if (status === 'warning') {
+    if (s === 'warning') {
       return (
         <div className="badge badge-warn" style={{ position: 'absolute', top: 8, right: 8 }}>
-          <AlertTriangle size={12} /> Warning
+          <AlertTriangle size={12} /> WARNING
         </div>
       );
     }
     return (
       <div className="badge badge-fail" style={{ position: 'absolute', top: 8, right: 8 }}>
-        <XCircle size={12} /> Failed
+        <XCircle size={12} /> FAIL
       </div>
     );
   };
@@ -93,11 +94,21 @@ export default function Dashboard() {
       </div>
 
       {/* Listings Section */}
-      <div style={{ marginBottom: '24px' }}>
-        <h2 style={{ fontSize: '20px', fontWeight: '700', color: '#282c3f', marginBottom: '8px' }}>
-          My Listings
-        </h2>
-        <p style={{ color: '#5F6477', fontSize: '14px' }}>Manage and track your catalog uploads</p>
+      <div style={{ marginBottom: '24px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <div>
+          <h2 style={{ fontSize: '20px', fontWeight: '700', color: '#282c3f', marginBottom: '4px' }}>
+            My Listings
+          </h2>
+          <p style={{ color: '#5F6477', fontSize: '14px', margin: 0 }}>Manage and track your catalog uploads</p>
+        </div>
+        <div style={{ position: 'relative', width: '300px' }}>
+          <input 
+            type="text" 
+            className="form-input" 
+            placeholder="Search listings..." 
+            style={{ width: '100%', padding: '10px 16px', borderRadius: '8px', border: '1px solid #E2E4EA' }}
+          />
+        </div>
       </div>
 
       {loading ? (
@@ -120,8 +131,23 @@ export default function Dashboard() {
                 <h3 style={{ fontSize: '14px', fontWeight: '600', marginBottom: '4px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                   {product.title}
                 </h3>
-                <div style={{ fontSize: '15px', fontWeight: '700', color: '#282c3f' }}>
-                  ₹{product.selling_price || product.mrp || '999'}
+                <div style={{ fontSize: '12px', color: '#5F6477', marginBottom: '12px' }}>
+                  {product.category || 'Apparel'}
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <div style={{ fontSize: '15px', fontWeight: '700', color: '#282c3f' }}>
+                    ₹{product.selling_price || product.mrp || '999'}
+                  </div>
+                  <button 
+                    className="btn btn-outline" 
+                    style={{ padding: '4px 12px', fontSize: '12px', borderRadius: '4px' }}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      navigate(`/product/${product.id}`);
+                    }}
+                  >
+                    View
+                  </button>
                 </div>
               </div>
             </div>
@@ -143,7 +169,7 @@ export default function Dashboard() {
             You haven't uploaded any products to your catalog yet.
           </p>
           <button onClick={() => navigate('/new-listing')} className="btn btn-outline">
-            Create your first listing
+            Add Your First Listing
           </button>
         </div>
       )}

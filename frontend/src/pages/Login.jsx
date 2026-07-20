@@ -45,30 +45,29 @@ export default function Login() {
       display: 'flex',
       alignItems: 'center',
       justifyContent: 'center',
-      background: 'linear-gradient(135deg, #ff3f6c 0%, #f77062 100%)',
+      background: 'linear-gradient(135deg, #F5F6F8 0%, #E8EAF1 100%)', /* subtle professional */
       padding: '20px'
     }}>
       <div style={{
-        background: 'rgba(255, 255, 255, 0.95)',
-        backdropFilter: 'blur(10px)',
+        background: '#FFFFFF',
         borderRadius: '16px',
-        padding: '40px',
+        padding: '48px 40px',
         width: '100%',
-        maxWidth: '420px',
-        boxShadow: '0 8px 32px rgba(0, 0, 0, 0.1)',
-        border: '1px solid rgba(255, 255, 255, 0.2)'
+        maxWidth: '440px',
+        boxShadow: '0 12px 40px rgba(0, 0, 0, 0.08)',
+        border: '1px solid var(--border)'
       }}>
-        <div style={{ textAlign: 'center', marginBottom: '32px' }}>
+        <div style={{ textAlign: 'center', marginBottom: '40px' }}>
           <h1 style={{ 
-            fontSize: '28px', 
+            fontSize: '32px', 
             fontWeight: '800', 
             color: '#282c3f',
-            marginBottom: '8px'
+            marginBottom: '12px'
           }}>
-            Welcome to <span style={{ color: '#ff3f6c' }}>Anchor</span>
+            Anchor <span style={{ color: '#ff3f6c' }}>Verify</span>
           </h1>
-          <p style={{ color: '#94969f', fontSize: '14px', fontWeight: '500' }}>
-            Myntra Seller Verification Portal
+          <p style={{ color: '#5F6477', fontSize: '15px', fontWeight: '500' }}>
+            AI-Powered Listing Verification for Fashion Sellers
           </p>
         </div>
 
@@ -130,19 +129,6 @@ export default function Login() {
             {loading ? <span className="spinner"></span> : <><LogIn size={18} /> Sign In</>}
           </button>
         </form>
-
-        <div style={{
-          marginTop: '24px',
-          textAlign: 'center',
-          fontSize: '12px',
-          color: '#94969f',
-          padding: '12px',
-          background: '#f5f5f6',
-          borderRadius: '6px'
-        }}>
-          Demo Credentials:<br/>
-          <strong>seller@myntra.com</strong> / <strong>demo123</strong>
-        </div>
       </div>
     </div>
   );

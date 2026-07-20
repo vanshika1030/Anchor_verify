@@ -4,11 +4,10 @@ import Sidebar from './components/Sidebar'
 import Login from './pages/Login'
 import Dashboard from './pages/Dashboard'
 import NewListing from './pages/NewListing'
-import Upload from './pages/Upload'
-import Details from './pages/Details'
 import Verify from './pages/Verify'
 import Success from './pages/Success'
 import ProductView from './pages/ProductView'
+import AnchorIntro from './pages/AnchorIntro'
 import AuthGuard from './components/AuthGuard'
 import './index.css'
 
@@ -17,8 +16,6 @@ function Breadcrumb() {
   const map = {
     '/dashboard': 'Dashboard',
     '/new-listing': 'New Listing',
-    '/new-listing/upload': 'Upload',
-    '/new-listing/details': 'Details',
     '/new-listing/verify': 'Verification',
     '/new-listing/success': 'Published',
   }
@@ -68,11 +65,10 @@ function Layout() {
             <Route path="/login" element={<Login />} />
             <Route path="/dashboard" element={<AuthGuard><Dashboard /></AuthGuard>} />
             <Route path="/new-listing" element={<AuthGuard><NewListing /></AuthGuard>} />
-            <Route path="/new-listing/upload" element={<AuthGuard><Upload /></AuthGuard>} />
-            <Route path="/new-listing/details" element={<AuthGuard><Details /></AuthGuard>} />
             <Route path="/new-listing/verify" element={<AuthGuard><Verify /></AuthGuard>} />
             <Route path="/new-listing/success" element={<AuthGuard><Success /></AuthGuard>} />
             <Route path="/verify" element={<AuthGuard><Verify /></AuthGuard>} />
+            <Route path="/anchor-intro" element={<AuthGuard><AnchorIntro /></AuthGuard>} />
             <Route path="/publish" element={<AuthGuard><Success /></AuthGuard>} />
             <Route path="/product/:id" element={<ProductView />} />
           </Routes>

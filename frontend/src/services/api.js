@@ -39,7 +39,7 @@ export async function extractAnchorAttributes(files) {
 // ─── Verify (NEW — single-prompt architecture) ──────────────────────
 
 /** Run full verification pipeline — sends ALL images to one LLM call */
-export async function runVerification({ anchorFiles, catalogFiles, declaredAttrs, anchorExtracted, mode }) {
+export async function runVerification({ anchorFiles, catalogFiles, sizeChartFile, sizeChartMeasurements, declaredAttrs, anchorExtracted, mode }) {
   const form = new FormData()
 
   // Anchor images
@@ -48,14 +48,26 @@ export async function runVerification({ anchorFiles, catalogFiles, declaredAttrs
   }
 
   // Catalog images (empty in generate mode)
+  const catalogPaths = []
   for (const f of (catalogFiles || [])) {
     if (f instanceof File) form.append('catalogImages', f)
+    else if (typeof f === 'string') catalogPaths.push(f)
+  }
+  if (catalogPaths.length > 0) {
+    form.append('catalogPaths', JSON.stringify(catalogPaths))
+  }
+
+  if (sizeChartFile instanceof File) {
+    form.append('sizeChart', sizeChartFile)
   }
 
   // Metadata
   form.append('declaredAttrs', JSON.stringify(declaredAttrs || {}))
   form.append('anchorExtracted', JSON.stringify(anchorExtracted || {}))
   form.append('mode', mode || 'upload')
+  if (sizeChartMeasurements) {
+    form.append('sizeChartMeasurements', JSON.stringify(sizeChartMeasurements))
+  }
 
   return post('/verify', form, true)
 }
@@ -81,8 +93,8 @@ export async function updateCSVRow(sessionId, rowIndex, updates, stage) {
 }
 
 /** Download CSV template */
-export function getTemplateURL() {
-  return `${API}/csv/template`
+export function getTemplateURL(category = 'Topwear') {
+  return `${API}/csv/template?category=${category}`
 }
 
 /** Download CSV at stage */

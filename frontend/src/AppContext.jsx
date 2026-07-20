@@ -11,6 +11,8 @@ export function AppProvider({ children }) {
   // Catalog images (multiple)
   const [catalogFiles, setCatalogFiles] = useState([])
   const [catalogPreviews, setCatalogPreviews] = useState([])
+  const [sizeChart, setSizeChart] = useState(null)
+  const [sizeChartMeasurements, setSizeChartMeasurements] = useState(null)
 
   // Mode and attributes
   const [mode, setMode] = useState('upload')
@@ -36,7 +38,7 @@ export function AppProvider({ children }) {
 
   const reset = () => {
     setAnchorFront(null); setAnchorBack(null); setAnchorCloseup(null)
-    setCatalogFiles([]); setCatalogPreviews([])
+    setCatalogFiles([]); setCatalogPreviews([]); setSizeChart(null)
     setMode('upload'); setConfirmedAttrs(null)
     setAnchorExtracted(null); setCatalogExtracted(null)
     setComparisonResult(null); setFabricResult(null); setPhashResult(null)
@@ -93,6 +95,8 @@ export function AppProvider({ children }) {
       anchorCloseup, setAnchorCloseup,
       catalogFiles, setCatalogFiles,
       catalogPreviews, setCatalogPreviews,
+      sizeChart, setSizeChart,
+      sizeChartMeasurements, setSizeChartMeasurements,
       mode, setMode,
       confirmedAttrs, setConfirmedAttrs,
       anchorExtracted, setAnchorExtracted,

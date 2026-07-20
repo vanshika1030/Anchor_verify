@@ -28,8 +28,12 @@ if (process.env.GROQ_API_KEY) {
   console.warn('⚠️  GROQ_API_KEY not set — Groq will not be available')
 }
 
-if (process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY.trim()) {
-  initGemini(process.env.GEMINI_API_KEY.trim())
+if (process.env.GEMINI_API_KEYS && process.env.GEMINI_API_KEYS.trim()) {
+  const keys = process.env.GEMINI_API_KEYS.split(',').map(k => k.trim()).filter(Boolean)
+  initGemini(keys)
+  console.log(`✅ Gemini initialized with ${keys.length} keys`)
+} else if (process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY.trim()) {
+  initGemini([process.env.GEMINI_API_KEY.trim()])
   console.log('✅ Gemini initialized (text-only fallback for listing generation)')
 } else {
   console.warn('⚠️  GEMINI_API_KEY not set — Gemini will not be available')
