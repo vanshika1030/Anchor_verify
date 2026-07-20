@@ -31,7 +31,7 @@ const CATEGORIES = {
       'sizeChart_M_chest', 'sizeChart_M_length', 'sizeChart_L_chest', 'sizeChart_L_length',
       'sizeChart_XL_chest', 'sizeChart_XL_length', 'catalogImage_front', 'catalogImage_back',
       'catalogImage_side', 'catalogImage_closeup', 'catalogImage_full',
-      'modelSize', 'modelHeight'
+      'modelSize', 'modelHeight', 'tags'
     ],
     sample: {
       styleId: 'AV-TS-001', productTitle: 'Men Graphic Print Cotton T-Shirt', brand: 'Roadster',
@@ -48,7 +48,8 @@ const CATEGORIES = {
       catalogImage_closeup: 'http://localhost:3001/uploads/catalog_closeup.jpg',
       catalogImage_full: 'http://localhost:3001/uploads/catalog_full.jpg',
       modelSize: 'M',
-      modelHeight: '6\'0"'
+      modelHeight: '6\'0"',
+      tags: 'graphic tee, casual, summer'
     }
   },
   Bottomwear: {
@@ -59,7 +60,7 @@ const CATEGORIES = {
       'sizeChart_28_waist', 'sizeChart_28_length', 'sizeChart_30_waist', 'sizeChart_30_length',
       'sizeChart_32_waist', 'sizeChart_32_length', 'sizeChart_34_waist', 'sizeChart_34_length',
       'catalogImage_front', 'catalogImage_back', 'catalogImage_side', 'catalogImage_closeup',
-      'catalogImage_full', 'modelSize', 'modelHeight'
+      'catalogImage_full', 'modelSize', 'modelHeight', 'tags'
     ],
     sample: {
       styleId: 'AV-JN-001', productTitle: 'Men Slim Fit Stretchable Jeans', brand: 'Wrangler',
@@ -76,7 +77,8 @@ const CATEGORIES = {
       catalogImage_closeup: 'http://localhost:3001/uploads/catalog_closeup.jpg',
       catalogImage_full: 'http://localhost:3001/uploads/catalog_full.jpg',
       modelSize: '32',
-      modelHeight: '6\'1"'
+      modelHeight: '6\'1"',
+      tags: 'denim, slim fit, casual wear'
     }
   },
   Dresses: {
@@ -86,7 +88,7 @@ const CATEGORIES = {
       'garmentLength', 'hemline', 'transparency', 'embellishment', 'dupatta', 'washCare', 'mrp',
       'sellingPrice', 'description', 'sizeChart_S_chest', 'sizeChart_S_length', 'sizeChart_M_chest',
       'sizeChart_XL_length', 'catalogImage_front', 'catalogImage_back', 'catalogImage_side',
-      'catalogImage_closeup', 'catalogImage_full', 'modelSize', 'modelHeight'
+      'catalogImage_closeup', 'catalogImage_full', 'modelSize', 'modelHeight', 'tags'
     ],
     sample: {
       styleId: 'AV-KT-001', productTitle: 'Women Printed Cotton Kurti', brand: 'Libas',
@@ -103,7 +105,8 @@ const CATEGORIES = {
       catalogImage_closeup: 'http://localhost:3001/uploads/catalog_closeup.jpg',
       catalogImage_full: 'http://localhost:3001/uploads/catalog_full.jpg',
       modelSize: 'S',
-      modelHeight: '5\'6"'
+      modelHeight: '5\'6"',
+      tags: 'ethnic wear, traditional, printed kurti'
     }
   },
   Footwear: {
@@ -112,7 +115,7 @@ const CATEGORIES = {
       'gender', 'articleType', 'material', 'soleMaterial', 'toeShape', 'heelHeight', 'occasion',
       'closureType', 'washCare', 'mrp', 'sellingPrice', 'description', 'sizeChart_6', 'sizeChart_7',
       'sizeChart_8', 'sizeChart_9', 'sizeChart_10', 'catalogImage_front', 'catalogImage_back',
-      'catalogImage_side', 'catalogImage_closeup', 'catalogImage_full'
+      'catalogImage_side', 'catalogImage_closeup', 'catalogImage_full', 'tags'
     ],
     sample: {
       styleId: 'AV-FW-001', productTitle: 'Men Casual White Sneakers', brand: 'Puma',
@@ -125,7 +128,8 @@ const CATEGORIES = {
       catalogImage_back: 'http://localhost:3001/uploads/catalog_back.jpg',
       catalogImage_side: 'http://localhost:3001/uploads/catalog_side.jpg',
       catalogImage_closeup: 'http://localhost:3001/uploads/catalog_closeup.jpg',
-      catalogImage_full: 'http://localhost:3001/uploads/catalog_full.jpg'
+      catalogImage_full: 'http://localhost:3001/uploads/catalog_full.jpg',
+      tags: 'sneakers, white shoes, casual'
     }
   }
 };

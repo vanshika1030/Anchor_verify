@@ -9,6 +9,7 @@ import {
   generateCorrections,
   runClipSimilarity,
   runPhashSimilarity,
+  enhanceMetadataWithVision
 } from '../services/gemini.js'
 import { calculateBayesianFusion } from '../services/fusion.js'
 
@@ -384,18 +385,21 @@ router.post('/', async (req, res) => {
     console.log(`[LAYER 2.5] ${corrections.length} corrections generated`)
 
     // ══════════════════════════════════════════════════════════════════
-    // LAYER 5: OPTIONAL TEXT-ONLY LLM (Generate mode only)
+    // LAYER 5: OPTIONAL TEXT-ONLY LLM (Generate mode only) & VISION METADATA ENHANCER
     // ══════════════════════════════════════════════════════════════════
+    let enhancedMetadata = null;
+
     if (isGenerateMode) {
       console.log(`[LAYER 5] Generate mode — creating listing metadata and image...`)
       
-      // Metadata generation (LLM dependent, can fail on rate limit)
+      // AI Gen-Z Trend Metadata generation via Vision
       try {
-        generatedMetadata = await generateListingMetadata(anchorPaths, parsedDeclared)
-        console.log(`[LAYER 5] Metadata generated: "${generatedMetadata?.title?.substring(0, 50)}..."`)
+        const baseData = { ...parsedAnchor, ...parsedDeclared };
+        generatedMetadata = await enhanceMetadataWithVision(anchorPaths[0], baseData);
+        console.log(`[LAYER 5] Enhanced Metadata generated: "${generatedMetadata?.title?.substring(0, 50)}..."`)
       } catch (metaErr) {
-        console.warn('[LAYER 5] Metadata generation failed (rate limit?):', metaErr.message)
-        generatedMetadata = {} // Ensure we have an object to attach the image URL to
+        console.warn('[LAYER 5] Enhanced Metadata generation failed:', metaErr.message)
+        generatedMetadata = {}
       }
 
       // Image compositing (Local CV, independent of LLM rate limits)
@@ -408,6 +412,19 @@ router.post('/', async (req, res) => {
         console.log(`[LAYER 5] Catalog image generated: ${imageUrl}`)
       } catch (imgErr) {
         console.error('[LAYER 5] Image generation failed:', imgErr.message)
+      }
+    } else if (anchorPaths.length > 0) {
+      console.log(`[LAYER 5] Verify mode (CSV) — generating AI Enhanced trend metadata...`)
+      try {
+        const currentData = {
+          title: parsedDeclared.productTitle || '',
+          description: parsedDeclared.description || '',
+          tags: parsedDeclared.tags || ''
+        };
+        enhancedMetadata = await enhanceMetadataWithVision(anchorPaths[0], currentData);
+        console.log(`[LAYER 5] CSV Enhanced Metadata ready: ${enhancedMetadata?.tags?.join(', ')}`);
+      } catch (e) {
+        console.warn('[LAYER 5] Failed to enhance CSV metadata:', e.message);
       }
     }
 
@@ -431,6 +448,7 @@ router.post('/', async (req, res) => {
       verdict,
       corrections,
       generatedMetadata,
+      enhancedMetadata,
     })
 
   } catch (err) {

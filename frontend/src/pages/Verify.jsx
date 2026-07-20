@@ -41,9 +41,11 @@ export default function Verify() {
   const [selectedCat, setSelectedCat] = useState(0)
   const [expandedRow, setExpandedRow] = useState(null)
   const [generatedMetadata, setGeneratedMetadata] = useState(null)
+  const [enhancedMetadata, setEnhancedMetadata] = useState(null)
   const [corrections, setCorrections] = useState(null)
   const [actualMode, setActualMode] = useState(mode)
   const [fabricReExtracted, setFabricReExtracted] = useState(null)
+  const [enhancementsApplied, setEnhancementsApplied] = useState(false)
   
   // Simulated checklist progress
   const [checklistStep, setChecklistStep] = useState(0)
@@ -102,6 +104,7 @@ export default function Verify() {
       setPhashResult(result.phashResult || null)
       setVerdict(result.verdict || { status: 'PASS', reason: 'Completed', critical_issues: [] })
       if (result.generatedMetadata) setGeneratedMetadata(result.generatedMetadata)
+      if (result.enhancedMetadata) setEnhancedMetadata(result.enhancedMetadata)
       if (result.corrections) setCorrections(result.corrections)
       if (result.mode) setActualMode(result.mode)
       
@@ -127,6 +130,13 @@ export default function Verify() {
         anchorMismatchCount: (comparisonResult || []).filter(r => r.status === 'mismatch').length,
         anchorVerificationNotes: v.reason || '',
       }
+      
+      if (enhancementsApplied && enhancedMetadata) {
+        updates.productTitle = enhancedMetadata.title;
+        updates.description = enhancedMetadata.description;
+        updates.tags = enhancedMetadata.tags?.join(', ');
+      }
+
       try {
         await updateCSVRow(csvSessionId, csvRowIndex, updates, 'published')
       } catch (err) {
@@ -349,6 +359,52 @@ export default function Verify() {
             {Object.keys(acceptedCorrections).filter(k => acceptedCorrections[k] !== 'IGNORED').length} of {corrections.length} corrections applied. 
             {Object.keys(acceptedCorrections).filter(k => acceptedCorrections[k] === 'IGNORED').length > 0 && " Ignored items will be kept as declared."}
           </div>
+        </div>
+      )}
+
+      {/* ✨ AI LISTING ENHANCER (CSV Mode only) ✨ */}
+      {enhancedMetadata && actualMode !== 'generate' && (
+        <div className="card" style={{ borderLeft: '4px solid #9c27b0', marginTop: 20, animation: 'fadeIn 0.5s ease' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+            <Sparkles size={20} color="#9c27b0" />
+            <div style={{ fontSize: 16, fontWeight: 700, color: '#9c27b0' }}>AI Listing Enhancer</div>
+          </div>
+          <div style={{ fontSize: 14, color: 'var(--text-secondary)', marginBottom: 16 }}>
+            Our Gen-Z Trend Analyst AI reviewed your anchor image and suggested highly-optimized aesthetic tags and a better title/description. 
+          </div>
+          
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 16 }}>
+            {/* Original */}
+            <div style={{ background: '#f5f5f5', padding: 16, borderRadius: 8 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 8 }}>Original CSV Data</div>
+              <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>{confirmedAttrs?.productTitle || 'No title provided'}</div>
+              <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 8, fontStyle: 'italic' }}>{confirmedAttrs?.description || 'No description provided'}</div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                <span style={{ fontSize: 11, background: '#e0e0e0', padding: '2px 6px', borderRadius: 4 }}>{confirmedAttrs?.tags || 'No tags'}</span>
+              </div>
+            </div>
+
+            {/* AI Enhanced */}
+            <div style={{ background: '#f3e5f5', padding: 16, borderRadius: 8, border: '1px solid #ce93d8' }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: '#8e24aa', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 8 }}>AI Enhanced Data</div>
+              <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4, color: '#4a148c' }}>{enhancedMetadata.title}</div>
+              <div style={{ fontSize: 12, color: '#6a1b9a', marginBottom: 8 }}>{enhancedMetadata.description}</div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                {enhancedMetadata.tags?.map((t, i) => (
+                  <span key={i} style={{ fontSize: 11, background: '#e1bee7', color: '#4a148c', padding: '2px 6px', borderRadius: 4 }}>{t}</span>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          <button 
+            className={`btn ${enhancementsApplied ? 'btn-success' : 'btn-primary'}`} 
+            style={{ width: '100%', background: enhancementsApplied ? 'var(--success)' : '#9c27b0', border: 'none' }}
+            onClick={() => setEnhancementsApplied(true)}
+            disabled={enhancementsApplied}
+          >
+            {enhancementsApplied ? <><CheckCircle size={16} /> Enhancements Applied</> : 'Apply Gen-Z Trend Enhancements to CSV'}
+          </button>
         </div>
       )}
 

@@ -1,4 +1,5 @@
 import { GoogleGenerativeAI } from '@google/generative-ai'
+import { GoogleAIFileManager } from '@google/generative-ai/server'
 import { GoogleGenAI } from '@google/genai'
 import fs from 'fs'
 import path from 'path'
@@ -1436,3 +1437,39 @@ export async function runPhashSimilarity(anchorPath, catalogPath) {
   }
 }
 
+export async function enhanceMetadataWithVision(anchorImagePath, currentMetadata) {
+  try {
+    const fileManager = new GoogleAIFileManager(getNextKey() || process.env.GEMINI_API_KEY)
+    const fileResult = await fileManager.uploadFile(anchorImagePath, {
+      mimeType: 'image/jpeg',
+      displayName: 'anchor'
+    })
+    
+    const prompt = `Act as an expert Gen-Z fashion trend analyst and SEO copywriter for Myntra.
+Analyze this garment's aesthetic. Classify it into modern trends/subcultures (e.g. Y2K, Dark Academia, Streetwear, Old Money, Cottagecore, Indie, Grunge, Coquette, etc.).
+Here is the current or base metadata: ${JSON.stringify(currentMetadata)}
+
+Your task is to generate an ENHANCED version of the metadata. You must return valid JSON with these exact keys:
+{
+  "title": "A highly optimized, trendy product title (max 60 chars). Include a style keyword if relevant.",
+  "description": "A 2-3 sentence product description that captures the vibe, aesthetic, and key details.",
+  "tags": ["tag1", "tag2", "tag3", "tag4", "tag5", "tag6", "tag7", "tag8"] // MUST include relevant Gen-Z trend names, aesthetic styles, and functional descriptors.
+}
+Return ONLY valid JSON.`;
+
+    const result = await callWithRetry([
+      { fileData: { fileUri: fileResult.file.uri, mimeType: fileResult.file.mimeType } },
+      { text: prompt }
+    ], 1); // use gemini-1.5-flash
+    
+    let jsonStr = result.text().trim();
+    if (jsonStr.startsWith('```json')) {
+      jsonStr = jsonStr.replace(/^```json\n/, '').replace(/\n```$/, '');
+    }
+    const parsed = JSON.parse(jsonStr);
+    return parsed;
+  } catch (error) {
+    console.error('[GEMINI] enhanceMetadataWithVision failed:', error);
+    return null;
+  }
+}
