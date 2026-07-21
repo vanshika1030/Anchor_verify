@@ -68,11 +68,14 @@ export default function Success() {
         </div>
 
         <div style={{ display: 'flex', justifyContent: 'center', gap: 12 }}>
+          <button className="btn btn-primary" onClick={() => nav('/myntra')} style={{ background: '#ff3f6c', borderColor: '#ff3f6c' }}>
+            View on Myntra <ArrowRight size={14} />
+          </button>
           <button className="btn btn-outline" onClick={() => nav('/new-listing')}>
             Create another listing
           </button>
-          <button className="btn btn-primary" onClick={() => nav('/')}>
-            Back to dashboard <ArrowRight size={14} />
+          <button className="btn btn-outline" onClick={() => nav('/')}>
+            Back to dashboard
           </button>
         </div>
       </div>

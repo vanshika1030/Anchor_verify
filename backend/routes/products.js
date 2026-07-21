@@ -1,6 +1,6 @@
 import express from 'express'
 import jwt from 'jsonwebtoken'
-import { getProducts, getProductById, createProduct } from '../services/database.js'
+import { getProducts, getProductById, createProduct, getAllProducts } from '../services/database.js'
 
 const router = express.Router()
 const JWT_SECRET = process.env.JWT_SECRET || 'anchor-demo-secret-key'
@@ -35,6 +35,16 @@ router.get('/', optionalAuth, (req, res) => {
   try {
     const sellerId = req.seller?.id || null
     const products = getProducts(sellerId)
+    res.json(products)
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// GET /api/products/all — list all products across all sellers (public)
+router.get('/all', (req, res) => {
+  try {
+    const products = getAllProducts()
     res.json(products)
   } catch (err) {
     res.status(500).json({ error: err.message })

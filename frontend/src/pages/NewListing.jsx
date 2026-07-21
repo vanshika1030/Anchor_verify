@@ -142,7 +142,7 @@ export default function NewListing() {
     if (type === 'size') {
       if (file.type.startsWith('image/')) {
         const reader = new FileReader();
-        reader.onload = (ev) => setSizeChart(ev.target.result);
+        reader.onload = (ev) => setSizeChart({ file: file, preview: ev.target.result });
         reader.readAsDataURL(file);
       } else {
         // Non-image file — store file reference with name
@@ -391,7 +391,7 @@ export default function NewListing() {
                     <>{sizeChart.name ? (
                       <><Check size={20} color="var(--success)" /><div style={{ fontSize: '11px', marginTop: '8px', color: 'var(--success)' }}>{sizeChart.name}</div></>
                     ) : (
-                      <img src={sizeChart} style={{ width: '100%', height: '100px', objectFit: 'cover', borderRadius: '4px' }} />
+                      <img src={sizeChart.preview || sizeChart} style={{ width: '100%', height: '100px', objectFit: 'cover', borderRadius: '4px' }} />
                     )}</>
                   ) : (
                     <><UploadIcon size={20} color="var(--text-tertiary)" /><div style={{ fontSize: '12px', marginTop: '8px' }}>Size Chart</div><div style={{ fontSize: '10px', color: 'var(--text-tertiary)' }}>IMG / PDF</div></>
@@ -444,10 +444,29 @@ export default function NewListing() {
               </div>
               
               <div style={{ display: 'grid', gap: 12, marginBottom: 24, maxHeight: '400px', overflowY: 'auto', paddingRight: 8 }}>
-                {Object.entries(extractedAttrs).map(([key, val]) => {
-                  if (typeof val === 'object' && val !== null) {
-                    return (
-                      <div key={key}>
+                {Object.keys(extractedAttrs || {}).length === 0 ? (
+                  <div style={{ padding: '16px', background: '#fff3e0', border: '1px solid #ffe0b2', borderRadius: '8px', color: '#e65100', fontSize: '13px' }}>
+                    <strong>Automatic extraction failed.</strong><br/>
+                    Please manually specify the garment type to proceed with AI generation.
+                    <div style={{ marginTop: 12 }}>
+                      <label className="form-label" style={{ fontSize: '12px' }}>Garment Type</label>
+                      <input 
+                        type="text" 
+                        className="form-input" 
+                        placeholder="e.g. T-Shirt, Kurti, Dress" 
+                        onChange={(e) => {
+                          const newAttrs = { garment_type: e.target.value };
+                          setExtractedAttrs(newAttrs);
+                          setConfirmedAttrs(newAttrs);
+                        }}
+                      />
+                    </div>
+                  </div>
+                ) : (
+                  Object.entries(extractedAttrs).map(([key, val]) => {
+                    if (typeof val === 'object' && val !== null) {
+                      return (
+                        <div key={key}>
                         <label className="form-label" style={{ fontSize: 12, textTransform: 'capitalize' }}>{key.replace(/_/g, ' ')}</label>
                         <input 
                           type="text" 
@@ -469,18 +488,26 @@ export default function NewListing() {
                       />
                     </div>
                   );
-                })}
-              </div>
+                })
+              )}
+            </div>
 
               <button 
                 className="btn btn-primary" 
                 style={{ width: '100%', background: 'linear-gradient(45deg, #ff3f6c, #f77062)', border: 'none' }} 
                 onClick={() => {
-                  setConfirmedAttrs({
+                  if (Object.keys(extractedAttrs || {}).length === 0) {
+                    alert('Please enter at least the garment type to proceed.');
+                    return;
+                  }
+                  const finalAttrs = {
                     ...extractedAttrs,
                     model_size: rightModelSize,
                     model_height: rightModelHeight
-                  });
+                  };
+                  setConfirmedAttrs(finalAttrs);
+                  // CRITICAL: Also set anchorExtracted so Verify.jsx sends it to the backend
+                  setAnchorExtracted(extractedAttrs);
                   setMode('generate');
                   navigate('/verify');
                 }}

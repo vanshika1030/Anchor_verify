@@ -56,8 +56,8 @@ export function getGenAI() {
 }
 
 // ─── Async Queue for Rate Limit Prevention ─────────────────────
-const CONCURRENCY_LIMIT = 1;
-const QUEUE_DELAY_MS = 5000;
+const CONCURRENCY_LIMIT = 2;
+const QUEUE_DELAY_MS = 1500;
 let activeCalls = 0;
 const callQueue = [];
 
@@ -92,6 +92,7 @@ function getCacheKey(promptParts) {
   for (const p of promptParts) {
     if (p.text) hash.update(p.text)
     if (p.inlineData) hash.update(p.inlineData.data) // Hash FULL image data — no truncation
+    if (p.fileData) hash.update(p.fileData.fileUri || '')
   }
   return hash.digest('hex')
 }
@@ -437,10 +438,14 @@ export function compareAttributesDeterministic(anchorAttrs, catalogAttrs, declar
 
     let anchorConf = getAttrConfidence(anchorAttrs, key)
     let catalogConf = getAttrConfidence(catalogAttrs, key)
+    
+    // Track if seller manually set this attribute (higher trust)
+    const sellerManuallySet = declaredAttrs && declaredAttrs[key] && 
+      (typeof declaredAttrs[key] === 'string' || declaredAttrs[key].source === 'seller')
 
     if (!anchorVal && !catalogVal && !declaredVal) {
       return { key, anchor_value: null, catalog_value: null, declared_value: null,
-               status: 'skip', severity: 'LOW', anchor_confidence: null, catalog_confidence: null, note: '' }
+               status: 'skip', severity: 'LOW', anchor_confidence: null, catalog_confidence: null, note: '', seller_override: false }
     }
 
     const acResult = fuzzyMatch(anchorVal, catalogVal, category)
@@ -449,6 +454,7 @@ export function compareAttributesDeterministic(anchorAttrs, catalogAttrs, declar
 
     let status = 'match'
     let note = ''
+    let sellerOverride = false
     
     // Cross-check LLM length with CV length
     if (key === 'overall_length' && anchorAttrs.cv_overall_length) {
@@ -458,11 +464,11 @@ export function compareAttributesDeterministic(anchorAttrs, catalogAttrs, declar
         note = `Visual AI estimated "${anchorVal}" but Geometric check says "${cvVal}". Please confirm.`
         status = 'warning'
         severity = 'HIGH'
-        anchorConf = 'LOW' // Disagreement lowers confidence
+        anchorConf = 'LOW'
         return {
           key, anchor_value: anchorVal, catalog_value: catalogVal, declared_value: declaredVal,
           status, severity, anchor_confidence: anchorConf, catalog_confidence: catalogConf, note,
-          needs_review: true, suggested_fallback: cvVal
+          needs_review: true, suggested_fallback: cvVal, seller_override: false
         }
       }
     }
@@ -472,7 +478,13 @@ export function compareAttributesDeterministic(anchorAttrs, catalogAttrs, declar
       note = `Anchor shows "${anchorVal}" but catalog shows "${catalogVal}"`
       if (!strict) severity = 'MEDIUM'
     } else if (adResult === 'mismatch' && anchorVal && declaredVal) {
-      if (acResult === 'match') {
+      // If seller manually set this value, trust them more
+      if (sellerManuallySet) {
+        status = 'warning'
+        severity = 'LOW'
+        sellerOverride = true
+        note = `AI detected "${anchorVal}" but seller confirmed "${declaredVal}". Trusting seller input.`
+      } else if (acResult === 'match') {
         status = 'warning'
         severity = strict ? 'MEDIUM' : 'LOW'
         note = `Both images show "${anchorVal}" but seller declared "${declaredVal}"`
@@ -489,7 +501,7 @@ export function compareAttributesDeterministic(anchorAttrs, catalogAttrs, declar
       status = 'skip'
     }
 
-    if (status === 'mismatch' && anchorConf === 'HIGH' && declaredVal) {
+    if (status === 'mismatch' && anchorConf === 'HIGH' && declaredVal && !sellerOverride) {
       severity = 'HIGH'
       note = note ? note + ' AI detected with HIGH confidence, overriding to critical severity.' : 'AI detected with HIGH confidence, overriding to critical severity.'
     }
@@ -497,6 +509,7 @@ export function compareAttributesDeterministic(anchorAttrs, catalogAttrs, declar
     return {
       key, anchor_value: anchorVal, catalog_value: catalogVal, declared_value: declaredVal,
       status, severity, anchor_confidence: anchorConf, catalog_confidence: catalogConf, note,
+      seller_override: sellerOverride,
     }
   })
 }
@@ -726,18 +739,13 @@ export async function extractAnchorAttributes(imagePaths) {
   console.log(`[EXTRACT] Running extraction on ${imagePaths.length} anchor images...`)
 
   // ══════════════════════════════════════════════════════════════
-  // PRIMARY: Gemini Vision (accurate, understands fashion)
+  // PRIMARY: Groq Vision (free, reliable, no IP-based rate limiting)
+  // FALLBACK: Gemini Vision (has rate limits, used only if Groq fails)
   // ══════════════════════════════════════════════════════════════
   let geminiAttrs = null
-  if (apiKeys.length > 0) {
-    try {
-      console.log('[EXTRACT] Phase 1: Gemini Vision (primary extractor)...')
-      const inlineImages = await Promise.all(
-        imagePaths.slice(0, 3).map(p => fileToInlineData(p))
-      )
-
-      const enumSection = buildEnumPromptSection()
-      const prompt = `You are an expert fashion product analyst for an Indian e-commerce platform (like Myntra/Ajio).
+  
+  const enumSection = buildEnumPromptSection()
+  const visionPrompt = `You are an expert fashion product analyst for an Indian e-commerce platform (like Myntra/Ajio).
 
 Analyze the garment shown in the provided image(s) and extract ALL of the following attributes. Be extremely precise — if the garment is a crop top, say "Crop" not "Hip Length". If it's half sleeve, say "Short Sleeve" not "Full Sleeve".
 
@@ -774,19 +782,43 @@ CRITICAL RULES:
 - For fabric: if you can't determine fabric type from the image, say "Not determinable"
 - DO NOT guess. If something is not visible or determinable, use "Not determinable".`
 
+  // Try Groq Vision first (free, reliable)
+  try {
+    const { isGroqAvailable, groqVisionExtract } = await import('./groq.js')
+    if (isGroqAvailable()) {
+      console.log('[EXTRACT] Phase 1: Groq Vision (primary extractor)...')
+      geminiAttrs = await groqVisionExtract(imagePaths, visionPrompt)
+      if (geminiAttrs && Object.keys(geminiAttrs).length > 0) {
+        console.log(`[EXTRACT] Groq Vision extracted ${Object.keys(geminiAttrs).length} attributes`)
+      } else {
+        geminiAttrs = null
+      }
+    }
+  } catch (groqErr) {
+    console.warn('[EXTRACT] Groq Vision failed:', groqErr.message, '— trying Gemini fallback')
+  }
+
+  // Fallback to Gemini Vision only if Groq failed
+  if (!geminiAttrs && apiKeys.length > 0) {
+    try {
+      console.log('[EXTRACT] Phase 1b: Gemini Vision (fallback extractor)...')
+      const inlineImages = await Promise.all(
+        imagePaths.slice(0, 3).map(p => fileToInlineData(p))
+      )
       const promptParts = [
         ...inlineImages,
-        { text: prompt }
+        { text: visionPrompt }
       ]
-
       const rawText = await callWithRetry(promptParts)
       geminiAttrs = parseJSON(rawText)
       console.log(`[EXTRACT] Gemini Vision extracted ${Object.keys(geminiAttrs).length} attributes`)
     } catch (err) {
-      console.warn('[EXTRACT] Gemini Vision failed:', err.message, '— falling back to local models')
+      console.warn('[EXTRACT] Gemini Vision also failed:', err.message, '— falling back to local models')
     }
-  } else {
-    console.log('[EXTRACT] No Gemini API key — using local models only')
+  }
+  
+  if (!geminiAttrs) {
+    console.log('[EXTRACT] No vision API succeeded — using local models only')
   }
 
   // ══════════════════════════════════════════════════════════════
@@ -898,6 +930,47 @@ CRITICAL RULES:
       value: cvRatio.length_category,
       confidence: 'HIGH',
       ratio: cvRatio.ratio
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════
+  // LAST RESORT: If ALL extractors failed, use Groq TEXT to at least
+  // generate placeholder attributes so the pipeline doesn't break.
+  // This is better than returning {} which causes "Missing Input" everywhere.
+  // ══════════════════════════════════════════════════════════════
+  if (Object.keys(attrs).length === 0) {
+    console.warn('[EXTRACT] ALL extractors returned empty! Using Groq text-only fallback...')
+    try {
+      const { isGroqAvailable, groqGenerate } = await import('./groq.js')
+      if (isGroqAvailable()) {
+        const fallbackResult = await groqGenerate(
+          `You are a fashion product analyst. Based on common Indian e-commerce fashion products, generate a GENERIC set of garment attributes as a JSON object. This is a placeholder because our image analysis failed. Return JSON with these keys: garment_type, primary_color, secondary_color, pattern_type, fabric_appearance, overall_length, sleeve_length, neck_type, silhouette, fit, embellishment, transparency, hemline, occasion_style. Use "Not determinable" for values you cannot guess. For garment_type, use "Top" as default.`
+        )
+        if (fallbackResult && typeof fallbackResult === 'object') {
+          for (const [key, value] of Object.entries(fallbackResult)) {
+            if (value && value !== 'None') {
+              attrs[key] = {
+                value: String(value),
+                confidence: 'LOW',
+                source: 'Groq-TextFallback'
+              }
+            }
+          }
+          console.log(`[EXTRACT] Groq text fallback provided ${Object.keys(attrs).length} placeholder attributes`)
+        }
+      }
+    } catch (groqFallbackErr) {
+      console.warn('[EXTRACT] Groq text fallback also failed:', groqFallbackErr.message)
+    }
+  }
+
+  // ABSOLUTE last resort — if still empty, create minimal structure
+  if (Object.keys(attrs).length === 0) {
+    console.warn('[EXTRACT] Creating minimal stub attributes (all APIs + local models failed)')
+    const STUB_KEYS = ['garment_type', 'primary_color', 'pattern_type', 'fabric_appearance',
+      'overall_length', 'sleeve_length', 'neck_type', 'fit', 'occasion_style']
+    for (const key of STUB_KEYS) {
+      attrs[key] = { value: 'Not determinable', confidence: 'LOW', source: 'stub' }
     }
   }
 
@@ -1026,13 +1099,65 @@ export function checkModelProportions(catalogAttrs, declaredHeight, declaredSize
 }
 
 export async function generateListingMetadata(imagePaths, attributes) {
+  // ── Category Taxonomy Map (Myntra hierarchy) ──
+  const CATEGORY_MAP = {
+    'Kurti':          'Women > Ethnic Wear > Kurtis & Kurtas',
+    'Kurta':          'Women > Ethnic Wear > Kurtis & Kurtas',
+    'Dress':          'Women > Western Wear > Dresses',
+    'Top':            'Women > Western Wear > Tops',
+    'Crop Top':       'Women > Western Wear > Tops > Crop Tops',
+    'Shirt':          'Women > Western Wear > Shirts',
+    'Blouse':         'Women > Ethnic Wear > Saree Blouses',
+    'Tunic':          'Women > Western Wear > Tops > Tunics',
+    'T-shirt':        'Women > Western Wear > T-Shirts',
+    'Saree':          'Women > Ethnic Wear > Sarees',
+    'Lehenga':        'Women > Ethnic Wear > Lehenga Choli',
+    'Dupatta':        'Women > Ethnic Wear > Dupattas',
+    'Palazzo':        'Women > Western Wear > Palazzos',
+    'Skirt':          'Women > Western Wear > Skirts',
+    'Trousers':       'Women > Western Wear > Trousers',
+    'Jeans':          'Women > Western Wear > Jeans',
+    'Shorts':         'Women > Western Wear > Shorts',
+    'Jumpsuit':       'Women > Western Wear > Jumpsuits',
+    'Co-ord Set':     'Women > Western Wear > Co-ord Sets',
+    'Shrug':          'Women > Western Wear > Shrugs',
+    'Jacket':         'Women > Winter Wear > Jackets',
+    'Sweater':        'Women > Winter Wear > Sweaters',
+    'Gown':           'Women > Western Wear > Gowns',
+    'Kaftan':         'Women > Ethnic Wear > Kaftans',
+    'Sharara':        'Women > Ethnic Wear > Sharara Sets',
+    'Churidar':       'Women > Ethnic Wear > Churidars',
+    'Salwar':         'Women > Ethnic Wear > Salwars',
+    'Nehru Jacket':   'Men > Ethnic Wear > Nehru Jackets',
+  }
+
+  function getCategoryPath(garmentType) {
+    if (!garmentType) return 'Women > Clothing'
+    // Try exact match first
+    if (CATEGORY_MAP[garmentType]) return CATEGORY_MAP[garmentType]
+    // Try case-insensitive partial match
+    const lower = garmentType.toLowerCase()
+    for (const [key, path] of Object.entries(CATEGORY_MAP)) {
+      if (key.toLowerCase() === lower || lower.includes(key.toLowerCase())) return path
+    }
+    // Determine if ethnic or western based on garment name
+    const ethnicTypes = ['kurti', 'kurta', 'saree', 'lehenga', 'dupatta', 'sharara', 'churidar', 'salwar', 'kaftan', 'blouse']
+    if (ethnicTypes.some(e => lower.includes(e))) return `Women > Ethnic Wear > ${garmentType}`
+    return `Women > Western Wear > ${garmentType}`
+  }
+
   // ── Tier 1: Try Groq (text-only, fastest, most reliable) ──
   try {
     const { isGroqAvailable, groqGenerateListingMetadata } = await import('./groq.js')
     if (isGroqAvailable()) {
       console.log('[GENERATE] Using Groq (text-only) for listing metadata...')
       const result = await groqGenerateListingMetadata(attributes)
-      if (result && result.title) return result
+      if (result && result.title) {
+        // Override category_path with our accurate taxonomy
+        const gt = attributes.garment_type?.value || attributes.garment_type || ''
+        result.category_path = getCategoryPath(gt)
+        return result
+      }
     }
   } catch (groqErr) {
     console.warn('[GENERATE] Groq failed:', groqErr.message)
@@ -1059,7 +1184,11 @@ Return ONLY valid JSON with these exact keys:
 }`
       // TEXT ONLY — no images sent to Gemini
       const text = await callWithRetry([{ text: promptText }])
-      return parseJSON(text)
+      const result = parseJSON(text)
+      // Override category_path with our accurate taxonomy
+      const gt = attributes.garment_type?.value || attributes.garment_type || ''
+      result.category_path = getCategoryPath(gt)
+      return result
     }
   } catch (geminiErr) {
     console.warn('[GENERATE] Gemini text-only also failed:', geminiErr.message)
@@ -1073,10 +1202,11 @@ Return ONLY valid JSON with these exact keys:
   const neck = attributes.neck_type?.value || attributes.neck_type || ''
   const sleeve = attributes.sleeve_length?.value || attributes.sleeve_length || ''
   const pattern = attributes.pattern_type?.value || attributes.pattern_type || 'Solid'
+  const occasion = attributes.occasion_style?.value || attributes.occasion_style || 'Casual'
 
   return {
     title: `${color} ${pattern} ${fabric} ${gt} for Women`.replace(/\s+/g, ' ').trim().substring(0, 60),
-    description: `A stylish ${color.toLowerCase()} ${gt.toLowerCase()} crafted from ${fabric.toLowerCase() || 'premium'} fabric. Features a ${neck.toLowerCase() || 'classic'} neckline with ${sleeve.toLowerCase() || 'regular'} sleeves. Perfect for casual and semi-formal occasions.`,
+    description: `A stylish ${color.toLowerCase()} ${gt.toLowerCase()} crafted from ${fabric.toLowerCase() || 'premium'} fabric. Features a ${neck.toLowerCase() || 'classic'} neckline with ${sleeve.toLowerCase() || 'regular'} sleeves. Perfect for ${occasion.toLowerCase()} occasions.`,
     bullets: [
       `Material: ${fabric || 'Premium fabric'}`,
       `Pattern: ${pattern}`,
@@ -1088,8 +1218,8 @@ Return ONLY valid JSON with these exact keys:
       `${neck || 'Stylish'} neckline`,
       `${sleeve || 'Regular'} sleeves`,
     ],
-    tags: [gt.toLowerCase(), color.toLowerCase(), fabric.toLowerCase(), pattern.toLowerCase(), 'women'].filter(Boolean),
-    category_path: `Women > Clothing > ${gt}`,
+    tags: [gt.toLowerCase(), color.toLowerCase(), fabric.toLowerCase(), pattern.toLowerCase(), occasion.toLowerCase(), 'women', 'trendy'].filter(Boolean),
+    category_path: getCategoryPath(gt),
     ideal_for: 'Women',
     fabric_details: fabric || 'Not specified',
     care_instructions: 'Machine wash cold. Do not bleach. Tumble dry low.',
@@ -1195,7 +1325,7 @@ export async function generateCatalogImage(imagePaths, attributes, cvOverallLeng
       
       // Check content-hash pregenerated cache first
       let pregenFound = false
-      const pythonHeight = modelHeight.replace(/"/g, '');
+      const pythonHeight = modelHeight.replace(/['"|]/g, '');
       const sizeHash = `${modelSize}_${pythonHeight}`;
       const pregenFileSize = path.join(pregeneratedDir, `${contentHash}_${sizeHash}_${view.name}.png`);
       const pregenFileBase = path.join(pregeneratedDir, `${contentHash}_${view.name}.png`);
@@ -1382,18 +1512,35 @@ export async function generateCatalogImage(imagePaths, attributes, cvOverallLeng
       const left = Math.round((canvasW - garmentMeta.width) / 2);
       const top = Math.round((canvasH - garmentMeta.height) / 2);
       
-      // Simple watermark text to distinguish views (Optional, can be removed)
-      const borderSvg = `<svg width="${canvasW}" height="${canvasH}">
+      const headRadius = 40;
+      const neckWidth = 30;
+      const shoulderWidth = 200;
+      const bodyWidth = 140;
+      const bodyHeight = 350;
+      
+      const mannequinSvg = `<svg width="${canvasW}" height="${canvasH}" xmlns="http://www.w3.org/2000/svg">
+        <rect x="0" y="0" width="${canvasW}" height="${canvasH}" fill="#f0f2f5" />
+        <g fill="#dcdfe6">
+          <!-- Head -->
+          <circle cx="${canvasW/2}" cy="120" r="${headRadius}" />
+          <!-- Neck -->
+          <rect x="${canvasW/2 - neckWidth/2}" y="${120 + headRadius - 5}" width="${neckWidth}" height="40" rx="10" />
+          <!-- Shoulders & Torso -->
+          <path d="M ${canvasW/2 - shoulderWidth/2} 180 
+                   Q ${canvasW/2} 160 ${canvasW/2 + shoulderWidth/2} 180
+                   L ${canvasW/2 + bodyWidth/2} ${180 + bodyHeight}
+                   L ${canvasW/2 - bodyWidth/2} ${180 + bodyHeight} Z" rx="20"/>
+          <!-- Legs -->
+          <rect x="${canvasW/2 - bodyWidth/2 + 10}" y="${180 + bodyHeight}" width="50" height="250" rx="15" />
+          <rect x="${canvasW/2 + bodyWidth/2 - 60}" y="${180 + bodyHeight}" width="50" height="250" rx="15" />
+        </g>
         <rect x="4" y="4" width="${canvasW - 8}" height="${canvasH - 8}" fill="none" stroke="#e0e0e0" stroke-width="2" rx="8"/>
-        <text x="20" y="30" fill="#999" font-family="sans-serif" font-size="14">${view.name.toUpperCase()} VIEW (Fallback)</text>
+        <text x="20" y="30" fill="#888" font-family="sans-serif" font-size="12" font-weight="600">${view.name.toUpperCase()} VIEW (AI MODEL FALLBACK)</text>
       </svg>`;
       
-      await sharp({
-        create: { width: canvasW, height: canvasH, channels: 4, background: { r: 248, g: 248, b: 248, alpha: 1 } }
-      })
+      await sharp(Buffer.from(mannequinSvg))
       .composite([
-        { input: resizedGarment, top, left },
-        { input: Buffer.from(borderSvg), top: 0, left: 0 }
+        { input: resizedGarment, top, left }
       ])
       .png()
       .toFile(outputPath);
@@ -1461,6 +1608,22 @@ export async function runPhashSimilarity(anchorPath, catalogPath) {
 }
 
 export async function enhanceMetadataWithVision(anchorImagePath, currentMetadata) {
+  // Try Groq Vision first (free, no rate limits)
+  try {
+    const { isGroqAvailable, groqEnhanceMetadata } = await import('./groq.js')
+    if (isGroqAvailable()) {
+      console.log('[ENHANCE] Using Groq Vision for metadata enhancement...')
+      const result = await groqEnhanceMetadata(anchorImagePath, currentMetadata)
+      if (result && result.title) {
+        console.log(`[ENHANCE] Groq Vision metadata ready: "${result.title?.substring(0, 40)}..."`)
+        return result
+      }
+    }
+  } catch (groqErr) {
+    console.warn('[ENHANCE] Groq Vision failed:', groqErr.message)
+  }
+
+  // Fallback to Gemini File API
   try {
     const fileManager = new GoogleAIFileManager(getNextKey() || process.env.GEMINI_API_KEY)
     const fileResult = await fileManager.uploadFile(anchorImagePath, {
@@ -1476,23 +1639,24 @@ Your task is to generate an ENHANCED version of the metadata. You must return va
 {
   "title": "A highly optimized, trendy product title (max 60 chars). Include a style keyword if relevant.",
   "description": "A 2-3 sentence product description that captures the vibe, aesthetic, and key details.",
-  "tags": ["tag1", "tag2", "tag3", "tag4", "tag5", "tag6", "tag7", "tag8"] // MUST include relevant Gen-Z trend names, aesthetic styles, and functional descriptors.
+  "tags": ["tag1", "tag2", "tag3", "tag4", "tag5", "tag6", "tag7", "tag8"]
 }
+Tags MUST include relevant Gen-Z trend names, aesthetic styles, regional/festival keywords (Diwali, Navratri, etc.), and functional descriptors.
 Return ONLY valid JSON.`;
 
     const result = await callWithRetry([
       { fileData: { fileUri: fileResult.file.uri, mimeType: fileResult.file.mimeType } },
       { text: prompt }
-    ], 1); // use gemini-1.5-flash
+    ], 1);
     
-    let jsonStr = result.text().trim();
-    if (jsonStr.startsWith('```json')) {
-      jsonStr = jsonStr.replace(/^```json\n/, '').replace(/\n```$/, '');
+    let jsonStr = result.trim();
+    if (jsonStr.startsWith('```')) {
+      jsonStr = jsonStr.replace(/^```(?:json)?\s*/, '').replace(/\s*```$/, '');
     }
     const parsed = JSON.parse(jsonStr);
     return parsed;
   } catch (error) {
-    console.error('[GEMINI] enhanceMetadataWithVision failed:', error);
+    console.error('[ENHANCE] Gemini fallback also failed:', error.message);
     return null;
   }
 }

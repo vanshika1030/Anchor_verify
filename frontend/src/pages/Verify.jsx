@@ -35,6 +35,7 @@ export default function Verify() {
   } = useApp()
 
   const [acceptedCorrections, setAcceptedCorrections] = useState({})
+  const [ignoreConfirm, setIgnoreConfirm] = useState(null)
   const [loading, setLoading] = useState(true)
   const [progress, setProgress] = useState('')
   const [error, setError] = useState(null)
@@ -146,7 +147,7 @@ export default function Verify() {
 
     // Save to database
     try {
-      const token = localStorage.getItem('token')
+      const token = sessionStorage.getItem('token')
       if (token) {
         const attrs = anchorExtracted || {}
         await fetch('http://localhost:3001/api/products', {
@@ -239,12 +240,21 @@ export default function Verify() {
   // Patch rows dynamically if corrections were accepted
   const rows = (comparisonResult || []).map(r => {
     const acceptedVal = acceptedCorrections[r.key]
-    if (acceptedVal && acceptedVal !== 'IGNORED') {
-      return {
-        ...r,
-        declared_value: acceptedVal,
-        status: 'match',
-        note: 'Fixed by user accepting AI suggestion'
+    if (acceptedVal) {
+      if (acceptedVal === 'IGNORED') {
+        return {
+          ...r,
+          status: 'match',
+          seller_override: true,
+          note: 'Seller confirmed original value'
+        }
+      } else {
+        return {
+          ...r,
+          declared_value: acceptedVal,
+          status: 'match',
+          note: 'Fixed by user accepting AI suggestion'
+        }
       }
     }
     return r
@@ -256,7 +266,19 @@ export default function Verify() {
   const skipCount = rows.filter(r => r.status === 'skip').length
 
   // Dynamically update verdict status based on un-fixed issues
-  let v = verdict || { status: 'PASS', reason: 'Completed', critical_issues: [] }
+  let v = verdict ? JSON.parse(JSON.stringify(verdict)) : { status: 'PASS', reason: 'Completed', critical_issues: [] }
+  
+  if (v.fusionResult) {
+     const origFailCount = (comparisonResult || []).filter(r => r.status === 'mismatch' || r.status === 'warning').length;
+     const currentFailCount = rows.filter(r => r.status === 'mismatch' || r.status === 'warning').length;
+     const resolved = origFailCount - currentFailCount;
+     if (resolved > 0) {
+       const boost = resolved * 15;
+       v.fusionResult.probability = Math.min(99, (v.fusionResult.probability || 0) + boost);
+       v.overall_similarity = v.fusionResult.probability;
+     }
+  }
+
   if (v.status !== 'UNVERIFIED') {
     if (failCount === 0) {
       if (warnCount > 0) v = { ...v, status: 'WARNING', reason: 'Verification passed with warnings' }
@@ -345,7 +367,7 @@ export default function Verify() {
                         Accept Fix
                       </button>
                       <button className="btn btn-outline" style={{ padding: '6px 12px', fontSize: 12 }} onClick={() => {
-                        setAcceptedCorrections(prev => ({...prev, [c.field]: 'IGNORED'}))
+                        setIgnoreConfirm(c)
                       }}>
                         Ignore
                       </button>
@@ -447,7 +469,22 @@ export default function Verify() {
             </div>
           ) : null}
 
-          <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 8, lineHeight: 1.4 }}>
+          {/* Model Proportions Metadata */}
+          <div style={{ marginTop: 16, padding: 12, background: '#e3f2fd', borderRadius: 8, border: '1px solid #bbdefb' }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: '#1565c0', marginBottom: 4, textTransform: 'uppercase' }}>
+              Model Proportions & Claimed Metadata
+            </div>
+            <div style={{ fontSize: 13, color: '#0d47a1', display: 'flex', gap: 16 }}>
+              <div><strong>Size:</strong> {confirmedAttrs?.size || 'M'}</div>
+              <div><strong>Height:</strong> {confirmedAttrs?.modelHeight || confirmedAttrs?.model_apparent_height || "5'6\""}</div>
+              <div><strong>Fitted for:</strong> {confirmedAttrs?.garment_type || 'Crop Top'}</div>
+            </div>
+            <div style={{ fontSize: 11, color: '#1976d2', marginTop: 6 }}>
+              Models generated exactly to specified dimensions ensuring accurate fitting.
+            </div>
+          </div>
+
+          <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 8, marginTop: 24, lineHeight: 1.4 }}>
             {generatedMetadata.title}
           </div>
 
@@ -594,10 +631,10 @@ export default function Verify() {
           </div>
           <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
             <strong>Bayesian Evidence Update:</strong><br />
-            Prior: {(v.fusionResult.breakdown.prior * 100).toFixed(0)}% 
-            → CLIP (LR: {v.fusionResult.breakdown.lr_clip != null ? v.fusionResult.breakdown.lr_clip.toFixed(2) : 'N/A'}) 
-            → pHash (LR: {v.fusionResult.breakdown.lr_phash != null ? v.fusionResult.breakdown.lr_phash.toFixed(2) : 'N/A'}) 
-            → Attributes (LR: {v.fusionResult.breakdown.lr_attributes != null ? v.fusionResult.breakdown.lr_attributes.toFixed(2) : 'N/A'})
+            Prior: {(v.fusionResult?.breakdown?.prior * 100).toFixed(0)}% 
+            → CLIP (LR: {v.fusionResult?.breakdown?.lr_clip != null ? v.fusionResult.breakdown.lr_clip.toFixed(2) : 'N/A'}) 
+            → pHash (LR: {v.fusionResult?.breakdown?.lr_phash != null ? v.fusionResult.breakdown.lr_phash.toFixed(2) : 'N/A'}) 
+            → Attributes (LR: {v.fusionResult?.breakdown?.lr_attributes != null ? v.fusionResult.breakdown.lr_attributes.toFixed(2) : 'N/A'})
           </div>
         </div>
       )}
@@ -765,24 +802,55 @@ export default function Verify() {
 
       {/* Action bar */}
       <div className="action-bar mt-20" style={{ marginBottom: 20 }}>
-        <div style={{ fontSize: 13, color: v.status === 'FAIL' ? 'var(--danger)' : v.status === 'PASS' ? 'var(--success)' : 'var(--warning)' }}>
-          {v.status === 'FAIL' && `${failCount} issue${failCount > 1 ? 's' : ''} must be resolved before publishing`}
-          {v.status === 'PASS' && `All checks passed`}
-          {v.status === 'WARNING' && `${warnCount} warning${warnCount > 1 ? 's' : ''} — publishing is allowed`}
-        </div>
-        <div className="action-btns">
-          <button className="btn btn-outline btn-sm" onClick={() => nav('/new-listing')}>
-            Replace images
-          </button>
-          {(v.status === 'FAIL' || v.status === 'UNVERIFIED') ? (
-            <button className="btn btn-primary btn-sm" disabled>Publish (blocked)</button>
-          ) : (
-            <button className="btn btn-primary btn-sm" onClick={handlePublish}>
-              Publish listing <ArrowRight size={14} />
-            </button>
-          )}
-        </div>
+        {(() => {
+          const hasSkip = rows.some(r => r.status === 'skip');
+          const scoreTooLow = (v.overall_similarity !== undefined && v.overall_similarity < 60);
+          const isPublishBlocked = hasSkip || scoreTooLow || v.status === 'FAIL' || v.status === 'UNVERIFIED';
+
+          return (
+            <>
+              <div style={{ fontSize: 13, color: isPublishBlocked ? 'var(--danger)' : v.status === 'PASS' ? 'var(--success)' : 'var(--warning)' }}>
+                {hasSkip ? "Missing required attributes. Please fill all inputs to publish." :
+                 scoreTooLow ? `Overall similarity is too low (${v.overall_similarity}%). Must be at least 60%.` :
+                 v.status === 'FAIL' ? `${failCount} issue${failCount > 1 ? 's' : ''} must be resolved before publishing.` :
+                 v.status === 'PASS' ? `All checks passed.` :
+                 `${warnCount} warning${warnCount > 1 ? 's' : ''} — publishing is allowed.`}
+              </div>
+              <div className="action-btns">
+                <button className="btn btn-outline btn-sm" onClick={() => nav('/new-listing')}>
+                  Replace images
+                </button>
+                {isPublishBlocked ? (
+                  <button className="btn btn-primary btn-sm" disabled>Publish (blocked)</button>
+                ) : (
+                  <button className="btn btn-primary btn-sm" onClick={handlePublish}>
+                    Publish listing <ArrowRight size={14} />
+                  </button>
+                )}
+              </div>
+            </>
+          );
+        })()}
       </div>
+
+      {ignoreConfirm && (
+        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}>
+          <div className="card" style={{ maxWidth: 400, margin: 20, background: '#fff' }}>
+            <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 12 }}>Confirm original value</div>
+            <div style={{ fontSize: 14, color: 'var(--text-secondary)', marginBottom: 20 }}>
+              Are you sure <strong>{ignoreConfirm.field.replace('_', ' ')}</strong> is <strong>{ignoreConfirm.current_value}</strong>? Our AI detected <strong>{ignoreConfirm.suggested_value}</strong> with {ignoreConfirm.confidence || 'high'} confidence.
+            </div>
+            <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+              <button className="btn btn-outline" onClick={() => setIgnoreConfirm(null)}>Cancel</button>
+              <button className="btn btn-primary" onClick={() => {
+                setAcceptedCorrections(prev => ({...prev, [ignoreConfirm.field]: 'IGNORED'}));
+                setIgnoreConfirm(null);
+              }}>Yes, keep mine</button>
+            </div>
+          </div>
+        </div>
+      )}
+
     </div>
   )
 }

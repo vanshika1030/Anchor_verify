@@ -1,5 +1,6 @@
 import { Router } from 'express'
 import {
+  extractAnchorAttributes,
   extractCatalogAttributes,
   compareAttributesDeterministic,
   generateVerdict,
@@ -136,7 +137,17 @@ router.post('/', async (req, res) => {
     // LAYER 2: LOCAL ATTRIBUTE EXTRACTION (ViT + CLIP Zero-Shot)
     // No Gemini API calls. 100% local.
     // ══════════════════════════════════════════════════════════════════
-    if (!isGenerateMode && catalogPaths.length > 0) {
+    let aiAnchorAttrs = {}
+    if (isGenerateMode) {
+      // In Generate mode, parsedAnchor is actually the seller's manual inputs from the frontend.
+      // We re-extract the actual AI truth to provide the Suggestion Copilot feedback!
+      console.log(`[LAYER 2] Re-extracting anchor attributes locally for Suggestion Copilot...`)
+      try {
+        aiAnchorAttrs = await extractAnchorAttributes(anchorPaths)
+      } catch (err) {
+        console.error('[LAYER 2] Anchor extraction failed:', err.message)
+      }
+    } else if (catalogPaths.length > 0) {
       console.log(`[LAYER 2] Extracting catalog attributes locally (ViT + CLIP zero-shot)...`)
       try {
         catalogAttrs = await extractCatalogAttributes(catalogPaths, anchorPaths)
@@ -150,18 +161,20 @@ router.post('/', async (req, res) => {
 
     // ══════════════════════════════════════════════════════════════════
     // LAYER 3: DETERMINISTIC COMPARISON (Synonym Matching)
-    // In generate mode: compare anchor-extracted vs seller-declared
+    // In generate mode: compare AI-extracted vs seller-declared (parsedAnchor)
     // In verify mode: compare anchor-extracted vs catalog-extracted vs seller-declared
     // ══════════════════════════════════════════════════════════════════
     console.log(`[LAYER 3] Deterministic comparison with synonym matching...`)
     
-    // In generate mode, use anchor attributes as both anchor AND catalog
-    // (since there are no catalog images, anchor IS the source)
-    const comparisonCatalog = isGenerateMode ? parsedAnchor : catalogAttrs
+    const comparisonAnchor = isGenerateMode ? aiAnchorAttrs : parsedAnchor
+    const comparisonCatalog = isGenerateMode ? aiAnchorAttrs : catalogAttrs
+    // We treat the seller's manual inputs (parsedAnchor in generate mode) as the declared source!
+    const comparisonDeclared = isGenerateMode ? parsedAnchor : parsedDeclared
+    
     const comparison = compareAttributesDeterministic(
-      parsedAnchor,        // anchor attributes (extracted on Upload page via local AI)
-      comparisonCatalog,   // catalog attributes (or anchor again in generate mode)
-      parsedDeclared,      // seller declarations (from Details page)
+      comparisonAnchor,    // anchor attributes (actual AI extracted)
+      comparisonCatalog,   // catalog attributes
+      comparisonDeclared,  // seller declarations (manual inputs)
     )
 
     // ── Layer 3.5: Fabric verification (CLIP closeup comparison) ─────
@@ -367,6 +380,14 @@ router.post('/', async (req, res) => {
     }
 
     // ── Verdict (now incorporating fusion score) ─────────────────
+    if (isGenerateMode) {
+      // In generate mode, keep data quality issues but remove catalog model proportion checks
+      // (since there's no catalog model yet — we're generating one)
+      modelIssues = modelIssues.filter(i => 
+        i.attr === 'Model Proportions' || // Keep: seller didn't provide height/size
+        i.attr === 'Size Chart Length'     // Keep: size chart contradicts declared length
+      );
+    }
     const verdict = generateVerdict(comparison, modelIssues)
     
     // Attach fusion data to verdict so frontend can access it
@@ -396,7 +417,11 @@ router.post('/', async (req, res) => {
       try {
         const baseData = { ...parsedAnchor, ...parsedDeclared };
         generatedMetadata = await enhanceMetadataWithVision(anchorPaths[0], baseData);
-        console.log(`[LAYER 5] Enhanced Metadata generated: "${generatedMetadata?.title?.substring(0, 50)}..."`)
+        if (generatedMetadata) {
+          console.log(`[LAYER 5] Enhanced Metadata generated: "${generatedMetadata.title?.substring(0, 50)}..."`)
+        } else {
+          console.log(`[LAYER 5] Enhanced Metadata generation returned null (fallback).`)
+        }
       } catch (metaErr) {
         console.warn('[LAYER 5] Enhanced Metadata generation failed:', metaErr.message)
         generatedMetadata = {}
@@ -408,8 +433,13 @@ router.post('/', async (req, res) => {
         const sizeChartPath = sizeChartFile ? sizeChartFile.path : null
         
         const imageUrl = await generateCatalogImage(anchorPaths, parsedDeclared, parsedAnchor.cv_overall_length, sizeChartPath)
-        if (generatedMetadata) generatedMetadata.generated_image_url = imageUrl
-        console.log(`[LAYER 5] Catalog image generated: ${imageUrl}`)
+        
+        if (!generatedMetadata) {
+          generatedMetadata = {}
+        }
+        generatedMetadata.generated_image_url = imageUrl
+        
+        console.log(`[LAYER 5] Catalog image generated successfully.`)
       } catch (imgErr) {
         console.error('[LAYER 5] Image generation failed:', imgErr.message)
       }

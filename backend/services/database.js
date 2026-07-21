@@ -133,3 +133,7 @@ export function getSellerByEmail(email) {
   const db = getDB()
   return db.prepare('SELECT * FROM sellers WHERE email = ?').get(email)
 }
+
+export function getAllProducts() {
+  return getProducts(null);
+}

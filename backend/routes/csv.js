@@ -197,7 +197,7 @@ router.post('/upload', csvUpload.single('file'), async (req, res) => {
                 const arrayBuffer = await response.arrayBuffer();
                 const buffer = Buffer.from(arrayBuffer);
                 fs.writeFileSync(localPath, buffer);
-                row[key] = `uploads/${filename}`; // Replace with local path
+                row[key] = `http://localhost:3001/uploads/${filename}`; // Full URL for frontend
               } else {
                 console.warn(`Failed to download ${url}: ${response.statusText}`);
               }

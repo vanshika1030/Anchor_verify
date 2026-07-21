@@ -98,16 +98,12 @@ async def lifespan(app: FastAPI):
     
     # Load CLIP Model — try FashionCLIP via transformers, fallback to best open_clip
     try:
-        from transformers import CLIPModel as HFCLIPModel, CLIPProcessor
-        print("[AI-SERVER] Attempting to load Marqo/marqo-fashionCLIP via transformers...")
-        hf_model = HFCLIPModel.from_pretrained("Marqo/marqo-fashionCLIP")
-        hf_processor = CLIPProcessor.from_pretrained("Marqo/marqo-fashionCLIP")
-        hf_model.eval()
-        clip_model = hf_model
-        clip_preprocess = hf_processor
-        clip_tokenizer = hf_processor
-        use_hf_clip = True
-        print("[AI-SERVER] OK: FashionCLIP loaded via transformers")
+        print("[AI-SERVER] Attempting to load Marqo/marqo-fashionCLIP via open_clip...")
+        clip_model, _, clip_preprocess = open_clip.create_model_and_transforms('hf-hub:Marqo/marqo-fashionCLIP')
+        clip_tokenizer = open_clip.get_tokenizer('hf-hub:Marqo/marqo-fashionCLIP')
+        clip_model.eval()
+        use_hf_clip = False
+        print("[AI-SERVER] OK: FashionCLIP loaded via open_clip")
     except Exception as e:
         print(f"[AI-SERVER] FashionCLIP not available ({e}), using best open_clip model...")
         clip_model, _, clip_preprocess = open_clip.create_model_and_transforms(

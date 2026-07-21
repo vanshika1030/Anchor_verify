@@ -1,3 +1,4 @@
+import { useEffect } from 'react'
 import { BrowserRouter, Routes, Route, useLocation, Navigate } from 'react-router-dom'
 import { AppProvider, useApp } from './AppContext'
 import Sidebar from './components/Sidebar'
@@ -7,6 +8,7 @@ import NewListing from './pages/NewListing'
 import Verify from './pages/Verify'
 import Success from './pages/Success'
 import ProductView from './pages/ProductView'
+import CitizenView from './pages/CitizenView'
 import AnchorIntro from './pages/AnchorIntro'
 import AuthGuard from './components/AuthGuard'
 import './index.css'
@@ -30,6 +32,16 @@ function Layout() {
   const { isAuthenticated, logout, seller } = useApp()
   const loc = useLocation()
   
+  // Safeguard against accidental reloads during the live presentation
+  useEffect(() => {
+    const handleBeforeUnload = (e) => {
+      e.preventDefault();
+      e.returnValue = ''; // Triggers the browser's native confirmation dialog
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, []);
+  
   if (!isAuthenticated && loc.pathname === '/login') {
     return (
       <Routes>
@@ -38,11 +50,13 @@ function Layout() {
     )
   }
 
+  const isMyntraRoute = loc.pathname.startsWith('/myntra');
+
   return (
-    <div className="layout">
-      {isAuthenticated && <Sidebar />}
-      <div className="main">
-        {isAuthenticated && (
+    <div className={isMyntraRoute ? '' : "layout"}>
+      {isAuthenticated && !isMyntraRoute && <Sidebar />}
+      <div className={isMyntraRoute ? '' : "main"}>
+        {isAuthenticated && !isMyntraRoute && (
           <header className="top-bar">
             <Breadcrumb />
             <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
@@ -59,9 +73,11 @@ function Layout() {
             </div>
           </header>
         )}
-        <div className="content">
+        <div className={isMyntraRoute ? '' : "content"}>
           <Routes>
             <Route path="/" element={<Navigate to={isAuthenticated ? "/dashboard" : "/login"} replace />} />
+            <Route path="/myntra" element={<CitizenView />} />
+            <Route path="/myntra/:id" element={<CitizenView />} />
             <Route path="/login" element={<Login />} />
             <Route path="/dashboard" element={<AuthGuard><Dashboard /></AuthGuard>} />
             <Route path="/new-listing" element={<AuthGuard><NewListing /></AuthGuard>} />

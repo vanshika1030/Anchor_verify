@@ -56,22 +56,31 @@ export function AppProvider({ children }) {
   ].filter(Boolean)
 
   // Auth State
-  const [isAuthenticated, setIsAuthenticated] = useState(!!localStorage.getItem('token'))
-  const [seller, setSeller] = useState(() => {
+  const getValidSeller = () => {
     try {
-      const token = localStorage.getItem('token');
-      if (token) return JSON.parse(atob(token.split('.')[1]));
-      return null;
+      const token = sessionStorage.getItem('token');
+      if (!token) return null;
+      const payload = JSON.parse(atob(token.split('.')[1]));
+      if (payload.exp && payload.exp < Date.now() / 1000) {
+        sessionStorage.removeItem('token');
+        return null;
+      }
+      return payload;
     } catch {
+      sessionStorage.removeItem('token');
       return null;
     }
-  })
+  };
+
+  const initialSeller = getValidSeller();
+  const [isAuthenticated, setIsAuthenticated] = useState(!!initialSeller)
+  const [seller, setSeller] = useState(initialSeller)
   
   // Category State
   const [selectedCategory, setSelectedCategory] = useState('')
 
   const login = (token) => {
-    localStorage.setItem('token', token)
+    sessionStorage.setItem('token', token)
     setIsAuthenticated(true)
     try {
       setSeller(JSON.parse(atob(token.split('.')[1])))
@@ -81,7 +90,7 @@ export function AppProvider({ children }) {
   }
 
   const logout = () => {
-    localStorage.removeItem('token')
+    sessionStorage.removeItem('token')
     setIsAuthenticated(false)
     setSeller(null)
   }

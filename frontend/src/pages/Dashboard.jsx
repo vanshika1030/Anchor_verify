@@ -17,7 +17,7 @@ export default function Dashboard() {
     try {
       const res = await fetch('http://localhost:3001/api/products', {
         headers: {
-          'Authorization': `Bearer ${localStorage.getItem('token')}`
+          'Authorization': `Bearer ${sessionStorage.getItem('token')}`
         }
       });
       if (res.ok) {
