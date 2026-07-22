@@ -39,6 +39,7 @@ export function initDB() {
       anchor_image_url TEXT,
       catalog_images JSON,
       ai_model_images JSON,
+      tags JSON,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (seller_id) REFERENCES sellers(id)
@@ -66,11 +67,11 @@ export function createProduct(productData) {
     INSERT INTO products (
       seller_id, style_code, brand_name, article_type, category, title, description,
       mrp, selling_price, attributes, size_chart, verification_status, verification_score,
-      anchor_image_url, catalog_images, ai_model_images
+      anchor_image_url, catalog_images, ai_model_images, tags
     ) VALUES (
       @seller_id, @style_code, @brand_name, @article_type, @category, @title, @description,
       @mrp, @selling_price, @attributes, @size_chart, @verification_status, @verification_score,
-      @anchor_image_url, @catalog_images, @ai_model_images
+      @anchor_image_url, @catalog_images, @ai_model_images, @tags
     )
   `)
 
@@ -90,7 +91,8 @@ export function createProduct(productData) {
     verification_score: productData.verification_score || null,
     anchor_image_url: productData.anchor_image_url || null,
     catalog_images: productData.catalog_images ? JSON.stringify(productData.catalog_images) : null,
-    ai_model_images: productData.ai_model_images ? JSON.stringify(productData.ai_model_images) : null
+    ai_model_images: productData.ai_model_images ? JSON.stringify(productData.ai_model_images) : null,
+    tags: productData.tags ? JSON.stringify(productData.tags) : null
   })
 
   return getProductById(result.lastInsertRowid)
@@ -111,7 +113,8 @@ export function getProducts(sellerId = null) {
     attributes: p.attributes ? JSON.parse(p.attributes) : null,
     size_chart: p.size_chart ? JSON.parse(p.size_chart) : null,
     catalog_images: p.catalog_images ? JSON.parse(p.catalog_images) : null,
-    ai_model_images: p.ai_model_images ? JSON.parse(p.ai_model_images) : null
+    ai_model_images: p.ai_model_images ? JSON.parse(p.ai_model_images) : null,
+    tags: p.tags ? JSON.parse(p.tags) : null
   }))
 }
 
@@ -125,7 +128,8 @@ export function getProductById(id) {
     attributes: p.attributes ? JSON.parse(p.attributes) : null,
     size_chart: p.size_chart ? JSON.parse(p.size_chart) : null,
     catalog_images: p.catalog_images ? JSON.parse(p.catalog_images) : null,
-    ai_model_images: p.ai_model_images ? JSON.parse(p.ai_model_images) : null
+    ai_model_images: p.ai_model_images ? JSON.parse(p.ai_model_images) : null,
+    tags: p.tags ? JSON.parse(p.tags) : null
   }
 }
 

@@ -121,7 +121,9 @@ export default function Dashboard() {
             <div key={product.id} className="card" onClick={() => navigate(`/product/${product.id}`)} style={{ padding: '0', overflow: 'hidden', cursor: 'pointer', transition: 'transform 0.2s' }}>
               <div style={{ position: 'relative', aspectRatio: '3/4', backgroundColor: '#f5f5f6' }}>
                 <img 
-                  src={product.anchor_image_url || 'https://via.placeholder.com/300x400?text=No+Image'} 
+                  src={(product.catalog_images && product.catalog_images.length > 0) 
+                    ? (typeof product.catalog_images[0] === 'string' ? product.catalog_images[0] : product.catalog_images[0]?.url) 
+                    : (product.anchor_image_url || 'https://via.placeholder.com/300x400?text=No+Image')} 
                   alt={product.title}
                   style={{ width: '100%', height: '100%', objectFit: 'cover' }}
                 />

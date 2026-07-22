@@ -9,10 +9,10 @@ export default function CitizenView() {
 
   useEffect(() => {
     // Fetch products
-    fetch('http://localhost:3001/api/products/public')
+    fetch('http://localhost:3001/api/products/all')
       .then(res => {
         if (!res.ok) {
-           return fetch('http://localhost:3001/api/products').then(r => r.json());
+           throw new Error('Failed to fetch products');
         }
         return res.json();
       })

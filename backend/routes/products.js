@@ -1,6 +1,7 @@
 import express from 'express'
 import jwt from 'jsonwebtoken'
 import { getProducts, getProductById, createProduct, getAllProducts } from '../services/database.js'
+import { getDemoProduct } from '../demo_registry.js'
 
 const router = express.Router()
 const JWT_SECRET = process.env.JWT_SECRET || 'anchor-demo-secret-key'
@@ -54,7 +55,8 @@ router.get('/all', (req, res) => {
 // GET /api/products/:id — get a single product (public, for customer view)
 router.get('/:id', (req, res) => {
   try {
-    const product = getProductById(req.params.id)
+    const id = req.params.id;
+    const product = getProductById(id)
     if (!product) return res.status(404).json({ error: 'Product not found' })
     res.json(product)
   } catch (err) {
@@ -63,10 +65,10 @@ router.get('/:id', (req, res) => {
 })
 
 // POST /api/products — publish a new product
-router.post('/', requireAuth, (req, res) => {
+router.post('/', optionalAuth, (req, res) => {
   try {
     const product = createProduct({
-      seller_id: req.seller.id,
+      seller_id: req.seller?.id || 1, // Default to demo seller 1 if no auth
       ...req.body
     })
     res.json(product)

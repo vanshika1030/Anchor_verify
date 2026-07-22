@@ -41,16 +41,6 @@ router.post('/', async (req, res) => {
     const parsedDeclared = typeof declaredAttrs === 'string' ? JSON.parse(declaredAttrs) : (declaredAttrs || {})
     const parsedAnchor = typeof anchorExtracted === 'string' ? JSON.parse(anchorExtracted) : (anchorExtracted || {})
 
-    // ══════════════════════════════════════════════════════════════════
-    // FAST PATH: Check demo registry first
-    // ══════════════════════════════════════════════════════════════════
-    const cachedResult = getDemoCachedResult(parsedDeclared, mode)
-    if (cachedResult) {
-      console.log(`[FAST PATH] ✅ Serving cached demo result (skipping all 5 layers)`)
-      return res.json(cachedResult)
-    }
-    console.log(`[FAST PATH] Cache missed — running live 5-layer pipeline`)
-
     const anchorFiles = (req.files || []).filter(f => f.fieldname === 'anchorImages')
     const catalogFiles = (req.files || []).filter(f => f.fieldname === 'catalogImages')
     const anchorPaths = anchorFiles.map(f => f.path)
@@ -63,6 +53,16 @@ router.post('/', async (req, res) => {
         return p
       })
     }
+
+    // ══════════════════════════════════════════════════════════════════
+    // FAST PATH: Check demo registry first
+    // ══════════════════════════════════════════════════════════════════
+    const cachedResult = getDemoCachedResult(parsedDeclared, mode, catalogPaths, anchorPaths)
+    if (cachedResult) {
+      console.log(`[FAST PATH] ✅ Serving cached demo result (skipping all 5 layers)`)
+      return res.json(cachedResult)
+    }
+    console.log(`[FAST PATH] Cache missed — running live 5-layer pipeline`)
 
     const isGenerateMode = mode === 'generate'
     

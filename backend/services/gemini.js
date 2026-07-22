@@ -1352,32 +1352,69 @@ export async function generateCatalogImage(imagePaths, attributes, cvOverallLeng
         const outputFile = path.join(process.cwd(), 'uploads', `gen_${parsedPath.name}_${view.name}.png`)
         
         let pregenFound = false
-        const pythonHeight = modelHeight.replace(/['"|]/g, '');
-        const sizeHash = `${modelSize}_${pythonHeight}`;
-        const pregenFileSize = path.join(pregeneratedDir, `${contentHash}_${sizeHash}_${view.name}.png`);
-        const pregenFileBase = path.join(pregeneratedDir, `${contentHash}_${view.name}.png`);
         
-        const checkPregen = (filePath, sourceFolder = '') => {
-          if (fs.existsSync(filePath)) {
-            console.log(`[IMAGE-GEN] Using pregenerated ${view.name} view ${sourceFolder ? `from ${sourceFolder}` : ''} (content-hash match)`);
-            fs.copyFileSync(filePath, outputFile);
-            generatedImages.push({
-              view: view.name,
-              url: `http://localhost:3001/uploads/gen_${parsedPath.name}_${view.name}.png`
-            });
-            return true;
+        // Make height file-system friendly (users might save as 5'8", 5-8, 58, etc)
+        const heightSafe = modelHeight.replace(/[^0-9]/g, '');
+        const sizeSafe = modelSize.trim().toUpperCase();
+        
+        // Deduce productId for fallback pregenerated matching
+        const typeMatch = (attributes.garment_type?.value || attributes.garment_type || '').toLowerCase();
+        const colorMatch = (attributes.primary_color?.value || attributes.primary_color || '').toLowerCase();
+        let productId = null;
+        if (typeMatch.includes('crop') || (typeMatch.includes('t-shirt') && colorMatch.includes('pink'))) productId = 'croptop';
+        else if (typeMatch.includes('t-shirt') && colorMatch.includes('blue')) productId = 'tshirt';
+        else if (typeMatch.includes('kurti')) productId = 'kurti';
+        else if (typeMatch.includes('jeans') || typeMatch.includes('bottomwear')) productId = 'jeans';
+
+        // Flexible pregenerated filename matching
+        // The user was instructed to use {product_id}_{size}_{height}_{view}.png
+        const checkPregen = (dir) => {
+          if (!fs.existsSync(dir)) return false;
+          
+          try {
+            const files = fs.readdirSync(dir);
+            let match = null;
+            
+            // 0. Try product_id match first: {product_id}_{size}_{height}_{view}.png
+            if (productId) {
+              match = files.find(f => f.startsWith(productId) && f.includes(`_${sizeSafe}_`) && f.replace(/[^0-9]/g, '').includes(heightSafe) && f.includes(`_${view.name}`) && f.endsWith('.png'));
+              if (!match) match = files.find(f => f.startsWith(productId) && f.includes(`_${sizeSafe}_`) && f.replace(/[^0-9]/g, '').includes(heightSafe) && f.endsWith('.png'));
+            }
+
+            // 1. Try exact match from content_hash: {content_hash}_{size}_{height}_{view}.png
+            if (!match) match = files.find(f => f.startsWith(contentHash) && f.includes(`_${sizeSafe}_`) && f.replace(/[^0-9]/g, '').includes(heightSafe) && f.includes(`_${view.name}`) && f.endsWith('.png'));
+            
+            // 1b. Try without view name
+            if (!match) match = files.find(f => f.startsWith(contentHash) && f.includes(`_${sizeSafe}_`) && f.replace(/[^0-9]/g, '').includes(heightSafe) && f.endsWith('.png'));
+            
+            // 2. Try falling back to any view match (e.g. {content_hash}_{view}.png)
+            if (!match) match = files.find(f => f.startsWith(contentHash) && f.includes(`_${view.name}.png`));
+            
+            // 3. Fallback to just {content_hash}.png
+            if (!match) match = files.find(f => f === `${contentHash}.png`);
+            
+            if (match) {
+              const filePath = path.join(dir, match);
+              console.log(`[IMAGE-GEN] Found pregenerated image ${match} for ${view.name} view`);
+              fs.copyFileSync(filePath, outputFile);
+              generatedImages.push({
+                view: view.name,
+                url: `http://localhost:3001/uploads/gen_${parsedPath.name}_${view.name}.png`
+              });
+              return true;
+            }
+          } catch(e) {
+             console.error("Error checking pregen dir", e);
           }
           return false;
         };
 
-        if (checkPregen(pregenFileSize) || checkPregen(pregenFileBase)) {
+        if (checkPregen(pregeneratedDir)) {
           pregenFound = true;
         } else if (fs.existsSync(pregeneratedDir)) {
           const subfolders = fs.readdirSync(pregeneratedDir, { withFileTypes: true }).filter(d => d.isDirectory())
           for (const folder of subfolders) {
-            const subFileSize = path.join(pregeneratedDir, folder.name, `${contentHash}_${sizeHash}_${view.name}.png`);
-            const subFileBase = path.join(pregeneratedDir, folder.name, `${contentHash}_${view.name}.png`);
-            if (checkPregen(subFileSize, folder.name) || checkPregen(subFileBase, folder.name)) {
+            if (checkPregen(path.join(pregeneratedDir, folder.name))) {
               pregenFound = true;
               break;
             }

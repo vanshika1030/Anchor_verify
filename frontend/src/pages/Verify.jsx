@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { useApp } from '../AppContext'
 import Stepper from '../components/Stepper'
 import { runVerification, updateCSVRow } from '../services/api'
-import { CheckCircle, XCircle, AlertTriangle, ArrowRight, Eye, Loader, Sparkles, Package, Tag } from 'lucide-react'
+import { CheckCircle, XCircle, AlertTriangle, ArrowRight, Eye, Loader, Sparkles, Package, Tag, ChevronLeft, ChevronRight } from 'lucide-react'
 
 const FLOW = ['Upload', 'Details', 'Verify', 'Publish']
 const CONFIDENCE_DOT = { HIGH: 'var(--success)', MEDIUM: 'var(--warning)', LOW: 'var(--danger)' }
@@ -54,6 +54,7 @@ export default function Verify() {
   const [actualMode, setActualMode] = useState(mode)
   const [fabricReExtracted, setFabricReExtracted] = useState(null)
   const [enhancementsApplied, setEnhancementsApplied] = useState(false)
+  const [currentSlide, setCurrentSlide] = useState(0)
   
   // Simulated checklist progress
   const [checklistStep, setChecklistStep] = useState(0)
@@ -88,11 +89,10 @@ export default function Verify() {
         throw new Error('No anchor images found — go back and upload your product photos')
       }
 
-      // Start the simulated checklist progression for the UI
       setChecklistStep(0)
       intervalRef.current = setInterval(() => {
-        setChecklistStep(prev => Math.min(prev + 1, 3))
-      }, 3500)
+        setChecklistStep(prev => prev < 4 ? prev + 1 : prev)
+      }, 2000)
 
       // ONE API call — sends all images to the single-prompt pipeline
       const result = await runVerification({
@@ -115,6 +115,9 @@ export default function Verify() {
       if (result.enhancedMetadata) setEnhancedMetadata(result.enhancedMetadata)
       if (result.corrections) setCorrections(result.corrections)
       if (result.mode) setActualMode(result.mode)
+      if (result.generatedMetadata) {
+        setGeneratedMetadata(result.generatedMetadata)
+      }
       
       setChecklistStep(4) // All done
 
@@ -126,9 +129,19 @@ export default function Verify() {
         clearInterval(intervalRef.current)
         intervalRef.current = null
       }
-      setLoading(false)
+      setChecklistStep(5)
+      setTimeout(() => {
+        setLoading(false)
+      }, 2000)
     }
   }
+
+  const fileToDataUrl = (file) => new Promise((resolve) => {
+    if (!file) return resolve(null);
+    const reader = new FileReader();
+    reader.onload = (e) => resolve(e.target.result);
+    reader.readAsDataURL(file);
+  });
 
   const handlePublish = async () => {
     const v = verdict
@@ -155,27 +168,41 @@ export default function Verify() {
     // Save to database
     try {
       const token = sessionStorage.getItem('token')
-      if (token) {
-        const attrs = anchorExtracted || {}
-        await fetch('http://localhost:3001/api/products', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${token}`
-          },
-          body: JSON.stringify({
-            title: attrs.garment_type || 'Product',
-            article_type: attrs.garment_type || '',
-            category: attrs.garment_type || '',
-            brand_name: confirmedAttrs?.brand || 'Brand',
-            attributes: attrs,
-            verdict: v,
-            verification_status: v?.status?.toLowerCase() || 'unverified',
-            verification_score: v?.overall_similarity || null,
-            anchor_image_url: anchorFront?.preview || null,
-          })
-        })
+      const attrs = anchorExtracted || {}
+      
+      const headers = { 'Content-Type': 'application/json' }
+      if (token) headers['Authorization'] = `Bearer ${token}`
+
+      const base64Anchor = await fileToDataUrl(anchorFront?.file);
+      const catalogDataUrls = [];
+      if (catalogFiles && catalogFiles.length > 0) {
+        for (const file of catalogFiles) {
+          const url = await fileToDataUrl(file);
+          if (url) catalogDataUrls.push(url);
+        }
       }
+
+      await fetch('http://localhost:3001/api/products', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          title: actualMode === 'generate' ? generatedMetadata?.title : (enhancedMetadata?.title || attrs.garment_type || 'Product'),
+          description: actualMode === 'generate' ? generatedMetadata?.description : (enhancedMetadata?.description || ''),
+          tags: actualMode === 'generate' ? (generatedMetadata?.tags || []) : (enhancedMetadata?.tags || []),
+          article_type: attrs.garment_type || '',
+          category: attrs.garment_type || '',
+          brand_name: confirmedAttrs?.brand || 'Brand',
+          attributes: attrs,
+          verdict: v,
+          verification_status: v?.status?.toLowerCase() || 'unverified',
+          verification_score: v?.overall_similarity || null,
+          anchor_image_url: base64Anchor || anchorFront?.preview || null,
+          catalog_images: actualMode === 'generate' ? 
+            (Array.isArray(generatedMetadata?.generated_image_url) ? 
+              generatedMetadata.generated_image_url : 
+              [generatedMetadata?.generated_image_url]) : (catalogDataUrls.length > 0 ? catalogDataUrls : null)
+        })
+      })
     } catch (err) {
       console.error('Failed to save product:', err)
     }
@@ -315,11 +342,18 @@ export default function Verify() {
              'Your listing is ready to publish.'}
           </div>
         </div>
-        <div style={{ display: 'flex', gap: 12, fontSize: 12, fontWeight: 600 }}>
-          <span style={{ color: 'var(--danger)' }}>{failCount} failed</span>
-          <span style={{ color: 'var(--warning)' }}>{warnCount} warnings</span>
-          <span style={{ color: 'var(--success)' }}>{passCount} passed</span>
-          {skipCount > 0 && <span style={{ color: '#e65100' }}>{skipCount} not detected</span>}
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 8 }}>
+          {v.overall_similarity !== undefined && (
+            <div style={{ background: 'rgba(0,0,0,0.05)', padding: '4px 10px', borderRadius: 16, fontSize: 13, fontWeight: 700, color: '#333' }}>
+              Bayesian Fusion Probability: <span style={{ color: v.overall_similarity > 80 ? 'var(--success)' : (v.overall_similarity > 50 ? 'var(--warning)' : 'var(--danger)') }}>{v.overall_similarity.toFixed(1)}%</span>
+            </div>
+          )}
+          <div style={{ display: 'flex', gap: 12, fontSize: 12, fontWeight: 600 }}>
+            <span style={{ color: 'var(--danger)' }}>{failCount} failed</span>
+            <span style={{ color: 'var(--warning)' }}>{warnCount} warnings</span>
+            <span style={{ color: 'var(--success)' }}>{passCount} passed</span>
+            {skipCount > 0 && <span style={{ color: '#e65100' }}>{skipCount} not detected</span>}
+          </div>
         </div>
       </div>
 
@@ -341,7 +375,7 @@ export default function Verify() {
               
               return (
                 <div key={i} style={{ 
-                  background: isAccepted ? '#e8f5e9' : isIgnored ? '#f5f5f5' : '#f8f9fa', 
+                  background: isAccepted ? 'var(--success-bg)' : isIgnored ? 'var(--bg-tag)' : 'var(--bg-highlight)', 
                   borderRadius: 8, 
                   padding: 12, 
                   border: isAccepted ? '1px solid var(--success)' : '1px solid var(--border)',
@@ -404,23 +438,23 @@ export default function Verify() {
           
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 16 }}>
             {/* Original */}
-            <div style={{ background: '#f5f5f5', padding: 16, borderRadius: 8 }}>
+            <div style={{ background: 'var(--bg-highlight)', padding: 16, borderRadius: 8, border: '1px solid var(--border)' }}>
               <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 8 }}>Original CSV Data</div>
               <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>{safeVal(confirmedAttrs?.productTitle, 'No title provided')}</div>
               <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 8, fontStyle: 'italic' }}>{safeVal(confirmedAttrs?.description, 'No description provided')}</div>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
-                <span style={{ fontSize: 11, background: '#e0e0e0', padding: '2px 6px', borderRadius: 4 }}>{safeVal(confirmedAttrs?.tags, 'No tags')}</span>
+                <span style={{ fontSize: 11, background: 'var(--bg-input)', padding: '2px 6px', borderRadius: 4, border: '1px solid var(--border)' }}>{safeVal(confirmedAttrs?.tags, 'No tags')}</span>
               </div>
             </div>
 
             {/* AI Enhanced */}
-            <div style={{ background: '#f3e5f5', padding: 16, borderRadius: 8, border: '1px solid #ce93d8' }}>
-              <div style={{ fontSize: 11, fontWeight: 700, color: '#8e24aa', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 8 }}>AI Enhanced Data</div>
-              <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4, color: '#4a148c' }}>{enhancedMetadata.title}</div>
-              <div style={{ fontSize: 12, color: '#6a1b9a', marginBottom: 8 }}>{enhancedMetadata.description}</div>
+            <div style={{ background: 'var(--accent-lighter)', padding: 16, borderRadius: 8, border: '1px solid #ce93d8' }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: '#c084fc', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 8 }}>AI Enhanced Data</div>
+              <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4, color: '#e879f9' }}>{enhancedMetadata.title}</div>
+              <div style={{ fontSize: 12, color: '#d8b4fe', marginBottom: 8 }}>{enhancedMetadata.description}</div>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
                 {enhancedMetadata.tags?.map((t, i) => (
-                  <span key={i} style={{ fontSize: 11, background: '#e1bee7', color: '#4a148c', padding: '2px 6px', borderRadius: 4 }}>{t}</span>
+                  <span key={i} style={{ fontSize: 11, background: 'rgba(192, 132, 252, 0.15)', color: '#e879f9', padding: '4px 8px', borderRadius: 6, fontWeight: 600, border: '1px solid rgba(192, 132, 252, 0.3)' }}>#{t}</span>
                 ))}
               </div>
             </div>
@@ -447,22 +481,56 @@ export default function Verify() {
             </div>
           </div>
 
-          {/* Multiple AI model images (5 views) */}
+          {/* Multiple AI model images (5 views) - Premium Carousel */}
           {Array.isArray(generatedMetadata.generated_image_url) && generatedMetadata.generated_image_url.length > 0 ? (
-            <div style={{ marginBottom: 20 }}>
-              <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8, color: 'var(--text-secondary)' }}>
-                🧑‍🎨 AI Model Catalog ({generatedMetadata.generated_image_url.length} views)
+            <div style={{ marginBottom: 24, padding: 12, background: 'linear-gradient(to bottom, #f8f9fa, #ffffff)', borderRadius: 12, border: '1px solid #e0e0e0', boxShadow: '0 8px 24px rgba(0,0,0,0.06)' }}>
+              <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 16, color: '#333', textAlign: 'center', letterSpacing: 0.5 }}>
+                🧑‍🎨 AI Model Catalog Gallery
               </div>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 10 }}>
-                {generatedMetadata.generated_image_url.map((img, i) => (
-                  <div key={i} style={{ background: '#f5f5f5', borderRadius: 8, padding: 6, textAlign: 'center' }}>
-                    <img 
-                      src={img.url || img} 
-                      alt={img.view ? `${img.view} view` : `View ${i + 1}`}
-                      style={{ width: '100%', height: 'auto', borderRadius: 6, aspectRatio: '3/4', objectFit: 'cover' }} 
-                    />
-                    {img.view && <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 4, textTransform: 'capitalize' }}>{img.view} view</div>}
-                  </div>
+              
+              <div style={{ position: 'relative', width: '100%', maxWidth: '600px', margin: '0 auto', overflow: 'hidden', borderRadius: 16, aspectRatio: '3/4', boxShadow: '0 16px 40px rgba(0,0,0,0.15)' }}>
+                <div style={{ display: 'flex', transition: 'transform 0.5s cubic-bezier(0.25, 1, 0.5, 1)', transform: `translateX(-${currentSlide * 100}%)`, height: '100%' }}>
+                  {generatedMetadata.generated_image_url.map((img, i) => (
+                    <div key={i} style={{ minWidth: '100%', height: '100%', position: 'relative' }}>
+                      <img 
+                        src={img.url || img} 
+                        alt={img.view ? `${img.view} view` : `View ${i + 1}`}
+                        style={{ width: '100%', height: '100%', objectFit: 'cover' }} 
+                      />
+                      {img.view && (
+                        <div style={{ position: 'absolute', bottom: 16, left: '50%', transform: 'translateX(-50%)', background: 'rgba(255,255,255,0.85)', backdropFilter: 'blur(8px)', padding: '6px 16px', borderRadius: 20, fontSize: 13, fontWeight: 600, color: '#333', textTransform: 'capitalize', boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }}>
+                          {img.view} view
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+                
+                {/* Navigation Buttons */}
+                <button 
+                  onClick={() => setCurrentSlide(prev => Math.max(0, prev - 1))}
+                  disabled={currentSlide === 0}
+                  style={{ position: 'absolute', top: '50%', left: 12, transform: 'translateY(-50%)', width: 36, height: 36, borderRadius: '50%', background: 'rgba(255,255,255,0.9)', border: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: currentSlide === 0 ? 'not-allowed' : 'pointer', opacity: currentSlide === 0 ? 0.3 : 1, boxShadow: '0 2px 8px rgba(0,0,0,0.15)', zIndex: 10, transition: 'all 0.2s' }}
+                >
+                  <ChevronLeft size={20} color="#333" />
+                </button>
+                <button 
+                  onClick={() => setCurrentSlide(prev => Math.min(generatedMetadata.generated_image_url.length - 1, prev + 1))}
+                  disabled={currentSlide === generatedMetadata.generated_image_url.length - 1}
+                  style={{ position: 'absolute', top: '50%', right: 12, transform: 'translateY(-50%)', width: 36, height: 36, borderRadius: '50%', background: 'rgba(255,255,255,0.9)', border: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: currentSlide === generatedMetadata.generated_image_url.length - 1 ? 'not-allowed' : 'pointer', opacity: currentSlide === generatedMetadata.generated_image_url.length - 1 ? 0.3 : 1, boxShadow: '0 2px 8px rgba(0,0,0,0.15)', zIndex: 10, transition: 'all 0.2s' }}
+                >
+                  <ChevronRight size={20} color="#333" />
+                </button>
+              </div>
+              
+              {/* Dots Indicator */}
+              <div style={{ display: 'flex', justifyContent: 'center', gap: 8, marginTop: 16 }}>
+                {generatedMetadata.generated_image_url.map((_, i) => (
+                  <div 
+                    key={i} 
+                    onClick={() => setCurrentSlide(i)}
+                    style={{ width: i === currentSlide ? 24 : 8, height: 8, borderRadius: 4, background: i === currentSlide ? 'var(--accent)' : '#d0d0d0', transition: 'all 0.3s ease', cursor: 'pointer' }}
+                  />
                 ))}
               </div>
             </div>
@@ -471,7 +539,7 @@ export default function Verify() {
               <img 
                 src={generatedMetadata.generated_image_url} 
                 alt="Generated AI Catalog" 
-                style={{ width: '100%', maxWidth: '300px', height: 'auto', borderRadius: 6 }} 
+                style={{ width: '100%', maxWidth: '400px', height: 'auto', borderRadius: 8, boxShadow: '0 8px 24px rgba(0,0,0,0.1)' }} 
               />
             </div>
           ) : null}
@@ -544,6 +612,53 @@ export default function Verify() {
             )}
             {generatedMetadata.size_fit_note && (
               <div style={{ gridColumn: '1 / -1' }}><strong>Size & Fit:</strong> {generatedMetadata.size_fit_note}</div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Enhanced Metadata (Trendy Tags) for Verify Mode */}
+      {enhancedMetadata && (
+        <div className="card" style={{ background: 'linear-gradient(135deg, #fffafb 0%, #fff 100%)', border: '1px solid #ff3f6c30' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+            <Sparkles size={18} color="#ff3f6c" />
+            <h3 style={{ fontSize: 16, fontWeight: 700, margin: 0, color: '#282c3f' }}>AI Enhanced Metadata</h3>
+          </div>
+          
+          <div style={{ marginBottom: 16 }}>
+            <div style={{ fontSize: 13, fontWeight: 600, color: '#5F6477', marginBottom: 4 }}>Optimized Title</div>
+            <div style={{ fontSize: 15, fontWeight: 700, color: '#282c3f' }}>{enhancedMetadata.title || 'N/A'}</div>
+          </div>
+          
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16 }}>
+            {enhancedMetadata.category && (
+              <div>
+                <div style={{ fontSize: 12, fontWeight: 600, color: '#5F6477', marginBottom: 4 }}>Category</div>
+                <div style={{ display: 'inline-block', background: '#f5f5f6', padding: '4px 12px', borderRadius: 16, fontSize: 13, fontWeight: 600, color: '#282c3f' }}>
+                  {enhancedMetadata.category}
+                </div>
+              </div>
+            )}
+            
+            {enhancedMetadata.tags && enhancedMetadata.tags.length > 0 && (
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 12, fontWeight: 600, color: '#5F6477', marginBottom: 4 }}>Trendy Tags</div>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                  {enhancedMetadata.tags.map((tag, idx) => (
+                    <span key={idx} style={{ 
+                      background: 'linear-gradient(to right, #ff3f6c15, #f7706215)', 
+                      border: '1px solid #ff3f6c30', 
+                      color: '#ff3f6c', 
+                      padding: '4px 10px', 
+                      borderRadius: 16, 
+                      fontSize: 12, 
+                      fontWeight: 600 
+                    }}>
+                      #{tag}
+                    </span>
+                  ))}
+                </div>
+              </div>
             )}
           </div>
         </div>
@@ -810,18 +925,17 @@ export default function Verify() {
       {/* Action bar */}
       <div className="action-bar mt-20" style={{ marginBottom: 20 }}>
         {(() => {
-          const hasSkip = rows.some(r => r.status === 'skip');
           const scoreTooLow = (v.overall_similarity !== undefined && v.overall_similarity < 60);
-          const isPublishBlocked = hasSkip || scoreTooLow || v.status === 'FAIL' || v.status === 'UNVERIFIED';
+          const isPublishBlocked = skipCount > 10 || scoreTooLow || failCount > 10 || v.status === 'UNVERIFIED';
 
           return (
             <>
               <div style={{ fontSize: 13, color: isPublishBlocked ? 'var(--danger)' : v.status === 'PASS' ? 'var(--success)' : 'var(--warning)' }}>
-                {hasSkip ? "Missing required attributes. Please fill all inputs to publish." :
+                {skipCount > 10 ? "Too many missing attributes. Please fill them to publish." :
                  scoreTooLow ? `Overall similarity is too low (${v.overall_similarity}%). Must be at least 60%.` :
-                 v.status === 'FAIL' ? `${failCount} issue${failCount > 1 ? 's' : ''} must be resolved before publishing.` :
+                 failCount > 5 ? `${failCount} issue${failCount > 1 ? 's' : ''} must be resolved before publishing.` :
                  v.status === 'PASS' ? `All checks passed.` :
-                 `${warnCount} warning${warnCount > 1 ? 's' : ''} — publishing is allowed.`}
+                 `${failCount > 0 ? failCount + ' issues, ' : ''}${warnCount} warning${warnCount > 1 ? 's' : ''}, ${skipCount > 0 ? skipCount + ' missing' : ''} — publishing is allowed.`}
               </div>
               <div className="action-btns">
                 <button className="btn btn-outline btn-sm" onClick={() => nav('/new-listing')}>

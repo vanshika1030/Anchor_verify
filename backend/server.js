@@ -44,8 +44,8 @@ console.log('📦 Architecture: 5-Layer Hierarchical — ZERO API calls for veri
 
 // ─── Middleware ──────────────────────────────────────────────────────
 app.use(cors({ origin: 'http://localhost:5173', credentials: true }))
-app.use(express.json({ limit: '50mb' }))
-app.use(express.urlencoded({ extended: true, limit: '50mb' }))
+app.use(express.json({ limit: '500mb' }))
+app.use(express.urlencoded({ extended: true, limit: '500mb' }))
 
 // Serve uploaded images statically (for verification comparison UI)
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')))

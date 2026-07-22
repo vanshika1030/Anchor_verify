@@ -334,23 +334,53 @@ for (const [productId, attrs] of Object.entries(DEMO_DECLARED_ATTRS)) {
 // PUBLIC API
 // ═══════════════════════════════════════════════════════════════════════
 
-/**
- * Check if the incoming request matches a known demo product.
- * Returns the cached result if matched, or null if not.
- * 
- * @param {Object} declaredAttrs - The seller's declared attributes from the CSV
- * @param {string} mode - 'upload' or 'generate'
- * @returns {Object|null} Cached verification result, or null to fall through
- */
-export function getDemoCachedResult(declaredAttrs, mode) {
+export function getDemoCachedResult(declaredAttrs, mode, catalogPaths = [], anchorPaths = []) {
   // Only cache verify mode (CSV upload flow), not generate mode
   if (mode === 'generate') return null
 
-  const fp = computeFingerprint(declaredAttrs)
-  const productId = FINGERPRINT_MAP[fp]
+  // Extremely robust matching for the pitch demo
+  // We prioritize explicit declared attributes from the CSV over filenames.
+  let attrProductId = null;
+  
+  if (declaredAttrs) {
+    const type = (declaredAttrs.garment_type || '').toLowerCase();
+    const color = (declaredAttrs.primary_color || '').toLowerCase();
+    
+    if (type.includes('crop') || (type.includes('t-shirt') && color.includes('pink'))) attrProductId = 'croptop';
+    else if (type.includes('t-shirt') && color.includes('blue')) attrProductId = 'tshirt';
+    else if (type.includes('kurti')) attrProductId = 'kurti';
+    else if (type.includes('jeans') || type.includes('bottomwear')) attrProductId = 'jeans';
+  }
+
+  let fileProductId = null;
+  const pathsString = [...catalogPaths, ...anchorPaths].join(' ').toLowerCase();
+  if (pathsString.includes('crop_') || pathsString.includes('croptop')) fileProductId = 'croptop';
+  else if (pathsString.includes('tshirt') || pathsString.includes('t_shirt')) fileProductId = 'tshirt';
+  else if (pathsString.includes('kurti')) fileProductId = 'kurti';
+  else if (pathsString.includes('jeans')) fileProductId = 'jeans';
+
+  let productId = null;
+  
+  if (attrProductId && fileProductId) {
+    if (attrProductId === fileProductId) {
+      productId = attrProductId;
+    } else {
+      console.log(`[DEMO REGISTRY] Conflict between declared attrs (${attrProductId}) and images (${fileProductId}). Falling back to live pipeline.`);
+      return null;
+    }
+  } else if (attrProductId) {
+    productId = attrProductId;
+  } else if (fileProductId) {
+    productId = fileProductId;
+  }
 
   if (!productId) {
-    console.log(`[DEMO REGISTRY] No match for fingerprint ${fp.substring(0, 12)}... — running live pipeline`)
+    const fp = computeFingerprint(declaredAttrs)
+    productId = FINGERPRINT_MAP[fp]
+  }
+
+  if (!productId) {
+    console.log(`[DEMO REGISTRY] No robust match — running live pipeline`)
     return null
   }
 

@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Download, Upload as UploadIcon, Sparkles, Check, ArrowRight, Camera, X } from 'lucide-react';
 import Papa from 'papaparse';
@@ -17,11 +17,34 @@ export default function NewListing() {
     setCsvSessionId
   } = useApp();
 
+  // Clear global state on mount to prevent bleed-over
+  useEffect(() => {
+    setAnchorFront(null);
+    setAnchorBack(null);
+    setAnchorCloseup(null);
+    setSizeChart(null);
+    setCatalogFiles([]);
+    setCatalogPreviews([]);
+    setConfirmedAttrs(null);
+    setAnchorExtracted(null);
+    setCsvSessionId(null);
+  }, []);
+
   // LEFT COLUMN STATE
   const [csvFile, setCsvFile] = useState(null);
   const [csvData, setCsvData] = useState(null);
   const [leftLoading, setLeftLoading] = useState(false);
   const csvInputRef = useRef(null);
+  const [error, setError] = useState('');
+  const [isRightPanelCollapsed, setIsRightPanelCollapsed] = useState(false);
+
+  // Auto-collapse right panel when CSV is uploaded
+  useEffect(() => {
+    if (csvData && csvData.length > 0) {
+      setIsRightPanelCollapsed(true);
+    }
+  }, [csvData]);
+
   // Local image previews for left column (don't pollute global state until submit)
   const [leftFront, setLeftFront] = useState(null);
   const [leftBack, setLeftBack] = useState(null);
@@ -196,14 +219,20 @@ export default function NewListing() {
     }
   };
 
-  // right verification handler is no longer used since we redirect to details
-
   return (
     <div style={{ maxWidth: '1200px', margin: '0 auto', position: 'relative' }}>
-      <div style={{ display: 'flex', gap: '40px', minHeight: '80vh' }}>
+      <div style={{ display: 'flex', gap: '40px', minHeight: '80vh', position: 'relative' }}>
         
         {/* === LEFT COLUMN === */}
-        <div style={{ flex: 1, padding: '24px', background: 'white', borderRadius: '16px', border: '1px solid var(--border)' }}>
+        <div style={{ 
+          flex: isRightPanelCollapsed ? '1' : '1 1 0%', 
+          minWidth: 0,
+          transition: 'all 0.4s cubic-bezier(0.4, 0, 0.2, 1)',
+          padding: '24px', 
+          background: 'white', 
+          borderRadius: '16px', 
+          border: '1px solid var(--border)' 
+        }}>
           <h2 style={{ fontSize: '20px', fontWeight: '700', marginBottom: '8px' }}>Upload Your Own Listing</h2>
           <p style={{ color: 'var(--text-secondary)', marginBottom: '24px', fontSize: '14px' }}>
             Bulk upload via CSV and verify with anchor images.
@@ -304,31 +333,57 @@ export default function NewListing() {
         </div>
 
         {/* === VERTICAL DIVIDER === */}
-        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
-          <div style={{ width: '1px', background: 'var(--border)', flex: 1 }}></div>
-          <div style={{ 
-            padding: '8px 12px', 
-            background: 'var(--bg-page)', 
-            border: '1px solid var(--border)', 
-            borderRadius: '20px',
-            fontSize: '12px',
-            fontWeight: '600',
-            color: 'var(--text-tertiary)',
-            margin: '16px 0'
-          }}>OR</div>
-          <div style={{ width: '1px', background: 'var(--border)', flex: 1 }}></div>
-        </div>
+        {!isRightPanelCollapsed && (
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', transition: 'opacity 0.4s ease', opacity: isRightPanelCollapsed ? 0 : 1 }}>
+            <div style={{ width: '1px', background: 'var(--border)', flex: 1 }}></div>
+            <div style={{ 
+              padding: '8px 12px', 
+              background: 'var(--bg-page)', 
+              border: '1px solid var(--border)', 
+              borderRadius: '20px',
+              fontSize: '12px',
+              fontWeight: '600',
+              color: 'var(--text-tertiary)',
+              margin: '16px 0'
+            }}>OR</div>
+            <div style={{ width: '1px', background: 'var(--border)', flex: 1 }}></div>
+          </div>
+        )}
 
         {/* === RIGHT COLUMN === */}
-        <div style={{ flex: 1, padding: '24px', background: 'linear-gradient(to bottom, #fff, #fff0f4)', borderRadius: '16px', border: '1px solid #ff3f6c30', position: 'relative' }}>
-          <div style={{ position: 'absolute', top: 24, right: 24, background: 'linear-gradient(45deg, #ff3f6c, #f77062)', color: 'white', padding: '4px 12px', borderRadius: '20px', fontSize: '12px', fontWeight: '600', display: 'flex', alignItems: 'center', gap: '4px' }}>
-            <Sparkles size={14} /> AI-Powered
-          </div>
+        <div style={{ 
+          flex: isRightPanelCollapsed ? '0 0 60px' : '1 1 0%',
+          minWidth: isRightPanelCollapsed ? '60px' : '0',
+          height: isRightPanelCollapsed ? '60px' : 'auto',
+          position: isRightPanelCollapsed ? 'absolute' : 'relative',
+          bottom: isRightPanelCollapsed ? '24px' : 'auto',
+          right: isRightPanelCollapsed ? '0px' : 'auto',
+          padding: isRightPanelCollapsed ? '0' : '24px', 
+          background: isRightPanelCollapsed ? 'linear-gradient(45deg, #ff3f6c, #f77062)' : 'linear-gradient(to bottom, #fff, #fff0f4)', 
+          borderRadius: isRightPanelCollapsed ? '30px' : '16px', 
+          border: isRightPanelCollapsed ? 'none' : '1px solid #ff3f6c30',
+          boxShadow: isRightPanelCollapsed ? '0 4px 15px rgba(255, 63, 108, 0.4)' : 'none',
+          overflow: 'hidden',
+          transition: 'all 0.4s cubic-bezier(0.4, 0, 0.2, 1)',
+          cursor: isRightPanelCollapsed ? 'pointer' : 'default',
+          display: 'flex',
+          alignItems: isRightPanelCollapsed ? 'center' : 'stretch',
+          justifyContent: isRightPanelCollapsed ? 'center' : 'flex-start',
+          zIndex: 10
+        }} onClick={() => isRightPanelCollapsed && setIsRightPanelCollapsed(false)}>
           
-          <h2 style={{ fontSize: '20px', fontWeight: '700', marginBottom: '8px', color: '#ff3f6c' }}>Generate with AI</h2>
-          <p style={{ color: 'var(--text-secondary)', marginBottom: '24px', fontSize: '14px' }}>
-            Auto-generate catalog details from raw images.
-          </p>
+          {isRightPanelCollapsed ? (
+            <Sparkles size={24} color="white" />
+          ) : (
+            <div style={{ width: '100%', opacity: isRightPanelCollapsed ? 0 : 1, transition: 'opacity 0.3s ease', transitionDelay: isRightPanelCollapsed ? '0s' : '0.2s' }}>
+              <div style={{ position: 'absolute', top: 24, right: 24, background: 'linear-gradient(45deg, #ff3f6c, #f77062)', color: 'white', padding: '4px 12px', borderRadius: '20px', fontSize: '12px', fontWeight: '600', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                <Sparkles size={14} /> AI-Powered
+              </div>
+              
+              <h2 style={{ fontSize: '20px', fontWeight: '700', marginBottom: '8px', color: '#ff3f6c' }}>Generate with AI</h2>
+              <p style={{ color: 'var(--text-secondary)', marginBottom: '24px', fontSize: '14px' }}>
+                Auto-generate catalog details from raw images.
+              </p>
 
           {rightStep === 1 && !showRightConfirm && (
             <div>
@@ -414,23 +469,15 @@ export default function NewListing() {
                 <div>
                   <label className="form-label" style={{ fontSize: '13px' }}>Model Size</label>
                   <select className="form-select" value={rightModelSize} onChange={(e) => setRightModelSize(e.target.value)}>
-                    <option value="XS">XS</option>
-                    <option value="S">S</option>
                     <option value="M">M</option>
-                    <option value="L">L</option>
                     <option value="XL">XL</option>
-                    <option value="XXL">XXL</option>
                   </select>
                 </div>
                 <div>
                   <label className="form-label" style={{ fontSize: '13px' }}>Model Height</label>
                   <select className="form-select" value={rightModelHeight} onChange={(e) => setRightModelHeight(e.target.value)}>
-                    <option value="5'2&quot;">5'2"</option>
                     <option value="5'4&quot;">5'4"</option>
                     <option value="5'6&quot;">5'6"</option>
-                    <option value="5'8&quot;">5'8"</option>
-                    <option value="5'10&quot;">5'10"</option>
-                    <option value="6'0&quot;">6'0"</option>
                   </select>
                 </div>
               </div>
@@ -526,7 +573,20 @@ export default function NewListing() {
               </button>
             </div>
           )}
-
+          
+          {!isRightPanelCollapsed && (
+            <button 
+              onClick={() => setIsRightPanelCollapsed(true)}
+              style={{ 
+                background: 'none', border: 'none', color: '#9CA0AE', fontSize: '12px', marginTop: '24px',
+                width: '100%', textAlign: 'center', cursor: 'pointer', textDecoration: 'underline' 
+              }}>
+              Collapse Panel
+            </button>
+          )}
+          
+            </div>
+          )}
         </div>
       </div>
     </div>
