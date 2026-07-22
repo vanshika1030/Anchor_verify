@@ -1,4 +1,5 @@
 import { Router } from 'express'
+import path from 'path'
 import {
   extractAnchorAttributes,
   extractCatalogAttributes,
@@ -13,6 +14,7 @@ import {
   enhanceMetadataWithVision
 } from '../services/gemini.js'
 import { calculateBayesianFusion } from '../services/fusion.js'
+import { getDemoCachedResult } from '../demo_registry.js'
 
 const router = Router()
 
@@ -38,6 +40,16 @@ router.post('/', async (req, res) => {
 
     const parsedDeclared = typeof declaredAttrs === 'string' ? JSON.parse(declaredAttrs) : (declaredAttrs || {})
     const parsedAnchor = typeof anchorExtracted === 'string' ? JSON.parse(anchorExtracted) : (anchorExtracted || {})
+
+    // ══════════════════════════════════════════════════════════════════
+    // FAST PATH: Check demo registry first
+    // ══════════════════════════════════════════════════════════════════
+    const cachedResult = getDemoCachedResult(parsedDeclared, mode)
+    if (cachedResult) {
+      console.log(`[FAST PATH] ✅ Serving cached demo result (skipping all 5 layers)`)
+      return res.json(cachedResult)
+    }
+    console.log(`[FAST PATH] Cache missed — running live 5-layer pipeline`)
 
     const anchorFiles = (req.files || []).filter(f => f.fieldname === 'anchorImages')
     const catalogFiles = (req.files || []).filter(f => f.fieldname === 'catalogImages')
@@ -71,8 +83,8 @@ router.post('/', async (req, res) => {
     if (!isGenerateMode && anchorPaths.length > 0 && catalogPaths.length > 0) {
       console.log(`[LAYER 1] Visual gate: CLIP similarity + pHash structural match...`)
       
-      const anchorPath = anchorPaths[0]
-      const catalogPath = catalogPaths[0]
+      const anchorPath = path.resolve(process.cwd(), anchorPaths[0])
+      const catalogPath = path.resolve(process.cwd(), catalogPaths[0])
 
       const [clipRes, phashRes] = await Promise.all([
         runClipSimilarity(anchorPath, catalogPath),

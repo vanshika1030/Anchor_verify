@@ -8,6 +8,13 @@ import { CheckCircle, XCircle, AlertTriangle, ArrowRight, Eye, Loader, Sparkles,
 const FLOW = ['Upload', 'Details', 'Verify', 'Publish']
 const CONFIDENCE_DOT = { HIGH: 'var(--success)', MEDIUM: 'var(--warning)', LOW: 'var(--danger)' }
 
+// Safely extract a displayable string from an attribute that might be
+// a plain string OR a {value, confidence, source} object.
+const safeVal = (v, fallback = '') =>
+  v == null ? fallback
+    : typeof v === 'object' ? (v.value ?? fallback)
+    : v
+
 const ATTR_LABELS = {
   garment_type: 'Garment type', primary_color: 'Primary color', secondary_color: 'Secondary color',
   pattern_type: 'Pattern type', fabric_appearance: 'Fabric appearance', overall_length: 'Overall length',
@@ -399,10 +406,10 @@ export default function Verify() {
             {/* Original */}
             <div style={{ background: '#f5f5f5', padding: 16, borderRadius: 8 }}>
               <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 8 }}>Original CSV Data</div>
-              <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>{confirmedAttrs?.productTitle || 'No title provided'}</div>
-              <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 8, fontStyle: 'italic' }}>{confirmedAttrs?.description || 'No description provided'}</div>
+              <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>{safeVal(confirmedAttrs?.productTitle, 'No title provided')}</div>
+              <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 8, fontStyle: 'italic' }}>{safeVal(confirmedAttrs?.description, 'No description provided')}</div>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
-                <span style={{ fontSize: 11, background: '#e0e0e0', padding: '2px 6px', borderRadius: 4 }}>{confirmedAttrs?.tags || 'No tags'}</span>
+                <span style={{ fontSize: 11, background: '#e0e0e0', padding: '2px 6px', borderRadius: 4 }}>{safeVal(confirmedAttrs?.tags, 'No tags')}</span>
               </div>
             </div>
 
@@ -475,9 +482,9 @@ export default function Verify() {
               Model Proportions & Claimed Metadata
             </div>
             <div style={{ fontSize: 13, color: '#0d47a1', display: 'flex', gap: 16 }}>
-              <div><strong>Size:</strong> {confirmedAttrs?.size || 'M'}</div>
-              <div><strong>Height:</strong> {confirmedAttrs?.modelHeight || confirmedAttrs?.model_apparent_height || "5'6\""}</div>
-              <div><strong>Fitted for:</strong> {confirmedAttrs?.garment_type || 'Crop Top'}</div>
+              <div><strong>Size:</strong> {safeVal(confirmedAttrs?.size, 'M')}</div>
+              <div><strong>Height:</strong> {safeVal(confirmedAttrs?.modelHeight) || safeVal(confirmedAttrs?.model_apparent_height) || "5'6\""}</div>
+              <div><strong>Fitted for:</strong> {safeVal(confirmedAttrs?.garment_type, 'Crop Top')}</div>
             </div>
             <div style={{ fontSize: 11, color: '#1976d2', marginTop: 6 }}>
               Models generated exactly to specified dimensions ensuring accurate fitting.

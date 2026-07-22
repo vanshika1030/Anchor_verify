@@ -385,9 +385,9 @@ def phash(req: PhashReq):
         hash1 = imagehash.phash(Image.open(req.anchor_path))
         hash2 = imagehash.phash(Image.open(req.catalog_path))
         
-        distance = hash1 - hash2
-        similarity = max(0.0, 1.0 - (distance / 64.0))
-        is_match = distance <= 10
+        distance = int(hash1 - hash2)
+        similarity = float(max(0.0, 1.0 - (distance / 64.0)))
+        is_match = bool(distance <= 10)
         
         return {
             "success": True,

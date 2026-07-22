@@ -22,6 +22,10 @@ export default function NewListing() {
   const [csvData, setCsvData] = useState(null);
   const [leftLoading, setLeftLoading] = useState(false);
   const csvInputRef = useRef(null);
+  // Local image previews for left column (don't pollute global state until submit)
+  const [leftFront, setLeftFront] = useState(null);
+  const [leftBack, setLeftBack] = useState(null);
+  const [leftCloseup, setLeftCloseup] = useState(null);
   
   const leftFrontRef = useRef(null);
   const leftBackRef = useRef(null);
@@ -66,15 +70,16 @@ export default function NewListing() {
     const reader = new FileReader();
     reader.onload = (ev) => {
       const data = { file, preview: ev.target.result };
-      if (type === 'front') setAnchorFront(data);
-      if (type === 'back') setAnchorBack(data);
-      if (type === 'closeup') setAnchorCloseup(data);
+      // Store locally — only push to global state on submit
+      if (type === 'front') setLeftFront(data);
+      if (type === 'back') setLeftBack(data);
+      if (type === 'closeup') setLeftCloseup(data);
     };
     reader.readAsDataURL(file);
   };
 
   const runLeftVerification = async () => {
-    if (!csvFile || (!anchorFront && !anchorBack && !anchorCloseup)) return;
+    if (!csvFile || (!leftFront && !leftBack && !leftCloseup)) return;
     
     setExtracting(true);
     try {
@@ -113,11 +118,16 @@ export default function NewListing() {
       };
       setConfirmedAttrs(mappedAttrs);
       
+      // Push local images to global state now
+      if (leftFront) setAnchorFront(leftFront);
+      if (leftBack) setAnchorBack(leftBack);
+      if (leftCloseup) setAnchorCloseup(leftCloseup);
+
       // 4. Extract Anchor Attributes
       const files = [];
-      if (anchorFront) files.push(anchorFront.file);
-      if (anchorBack) files.push(anchorBack.file);
-      if (anchorCloseup) files.push(anchorCloseup.file);
+      if (leftFront) files.push(leftFront.file);
+      if (leftBack) files.push(leftBack.file);
+      if (leftCloseup) files.push(leftCloseup.file);
       
       const result = await extractAnchorAttributes(files);
       setExtractedAttrs(result.attributes);
@@ -258,24 +268,24 @@ export default function NewListing() {
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', marginBottom: '16px' }}>
                 <div className="drop-zone" style={{ padding: '20px 10px' }} onClick={() => leftFrontRef.current?.click()}>
                   <input type="file" accept="image/*" ref={leftFrontRef} hidden onChange={(e) => handleLeftImage('front', e)} />
-                  {anchorFront ? (
-                    <img src={anchorFront.preview} style={{ width: '100%', height: '180px', objectFit: 'cover', borderRadius: '4px' }} />
+                  {leftFront ? (
+                    <img src={leftFront.preview} style={{ width: '100%', height: '180px', objectFit: 'cover', borderRadius: '4px' }} />
                   ) : (
                     <><Camera size={20} color="var(--text-tertiary)" /><div style={{ fontSize: '12px', marginTop: '8px' }}>Front View</div></>
                   )}
                 </div>
                 <div className="drop-zone" style={{ padding: '20px 10px' }} onClick={() => leftBackRef.current?.click()}>
                   <input type="file" accept="image/*" ref={leftBackRef} hidden onChange={(e) => handleLeftImage('back', e)} />
-                  {anchorBack ? (
-                    <img src={anchorBack.preview} style={{ width: '100%', height: '180px', objectFit: 'cover', borderRadius: '4px' }} />
+                  {leftBack ? (
+                    <img src={leftBack.preview} style={{ width: '100%', height: '180px', objectFit: 'cover', borderRadius: '4px' }} />
                   ) : (
                     <><Camera size={20} color="var(--text-tertiary)" /><div style={{ fontSize: '12px', marginTop: '8px' }}>Back View</div></>
                   )}
                 </div>
                 <div className="drop-zone" style={{ padding: '20px 10px', gridColumn: 'span 2' }} onClick={() => leftCloseupRef.current?.click()}>
                   <input type="file" accept="image/*" ref={leftCloseupRef} hidden onChange={(e) => handleLeftImage('closeup', e)} />
-                  {anchorCloseup ? (
-                    <img src={anchorCloseup.preview} style={{ width: '100%', height: '180px', objectFit: 'cover', borderRadius: '4px' }} />
+                  {leftCloseup ? (
+                    <img src={leftCloseup.preview} style={{ width: '100%', height: '180px', objectFit: 'cover', borderRadius: '4px' }} />
                   ) : (
                     <><Camera size={20} color="var(--text-tertiary)" /><div style={{ fontSize: '12px', marginTop: '8px' }}>Closeup</div></>
                   )}
@@ -285,7 +295,7 @@ export default function NewListing() {
                 className="btn btn-primary" 
                 style={{ width: '100%' }} 
                 onClick={runLeftVerification}
-                disabled={(!anchorFront && !anchorBack && !anchorCloseup) || extracting}
+                disabled={(!leftFront && !leftBack && !leftCloseup) || extracting}
               >
                 {extracting ? <><span className="spinner"></span> Processing...</> : <>Step 5: Extract & Review <ArrowRight size={16} /></>}
               </button>

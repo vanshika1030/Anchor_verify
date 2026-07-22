@@ -87,6 +87,7 @@ const CATEGORIES = {
       'gender', 'articleType', 'neckType', 'sleeveLength', 'fabric', 'pattern', 'fit', 'occasion',
       'garmentLength', 'hemline', 'transparency', 'embellishment', 'dupatta', 'washCare', 'mrp',
       'sellingPrice', 'description', 'sizeChart_S_chest', 'sizeChart_S_length', 'sizeChart_M_chest',
+      'sizeChart_M_length', 'sizeChart_L_chest', 'sizeChart_L_length', 'sizeChart_XL_chest',
       'sizeChart_XL_length', 'catalogImage_front', 'catalogImage_back', 'catalogImage_side',
       'catalogImage_closeup', 'catalogImage_full', 'modelSize', 'modelHeight', 'tags'
     ],
