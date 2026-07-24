@@ -8,7 +8,6 @@ export default function CitizenView() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    // Fetch products
     fetch('http://localhost:3001/api/products/all')
       .then(res => {
         if (!res.ok) {
@@ -17,11 +16,14 @@ export default function CitizenView() {
         return res.json();
       })
       .then(data => {
-        setProducts(Array.isArray(data) ? data : []);
+        const fetchedProducts = Array.isArray(data) ? data : [];
+        const publishedProducts = fetchedProducts.filter(p => p.verification_status === 'published');
+        setProducts(publishedProducts);
         setLoading(false);
       })
       .catch(err => {
         console.error(err);
+        setProducts([]);
         setLoading(false);
       });
   }, []);
@@ -151,7 +153,13 @@ export default function CitizenView() {
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(210px, 1fr))', gap: '30px 20px' }}>
             {products.map((product) => {
               const generated = product.verification_status === 'generated';
-              const isVerified = product.verification_status === 'verified' || product.verification_status === 'pass';
+              const evidenceStatus = (
+                product.verification_report?.verdict?.status ||
+                product.verification_status ||
+                ''
+              ).toLowerCase();
+              const isVerified = evidenceStatus === 'verified' || evidenceStatus === 'pass';
+              const needsReview = evidenceStatus === 'warning' || evidenceStatus === 'fail' || evidenceStatus === 'unverified';
               
               let imageUrl = product.anchor_image_url;
               if (generated && product.ai_model_images && product.ai_model_images.length > 0) {
@@ -178,7 +186,7 @@ export default function CitizenView() {
                 >
                   <div style={{ position: 'relative', aspectRatio: '3/4', overflow: 'hidden', backgroundColor: '#f5f5f6', marginBottom: 12 }}>
                     {imageUrl ? (
-                      <img src={imageUrl} alt={product.title} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                      <img src={imageUrl} alt={product.title} style={{ width: '100%', height: '100%', objectFit: 'contain', background: '#fff' }} />
                     ) : (
                       <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#a0a0a0' }}>No Image</div>
                     )}
@@ -226,6 +234,14 @@ export default function CitizenView() {
                         <span style={{ fontSize: 11, fontWeight: 700, color: '#03a685' }}>Anchor Verified ✓</span>
                       </div>
                     )}
+                    {needsReview && (
+                      <div style={{ display: 'inline-flex', alignItems: 'center', gap: 4, background: evidenceStatus === 'fail' ? '#fff0f2' : '#fff8e6', padding: '2px 6px', borderRadius: 2 }}>
+                        <ShieldCheck size={12} color={evidenceStatus === 'fail' ? '#d9304f' : '#b26a00'} />
+                        <span style={{ fontSize: 11, fontWeight: 700, color: evidenceStatus === 'fail' ? '#d9304f' : '#b26a00' }}>
+                          {evidenceStatus === 'fail' ? 'Anchor discrepancy flagged' : 'Anchor review available'}
+                        </span>
+                      </div>
+                    )}
                   </div>
                 </div>
               );
@@ -236,4 +252,3 @@ export default function CitizenView() {
     </div>
   );
 }
-

@@ -118,8 +118,8 @@ export async function groqVisionExtract(imagePaths, prompt) {
   content.push({ type: 'text', text: prompt })
 
   // Try larger vision model first, fall back to smaller one
-  const VISION_MODELS = ['llama-3.2-90b-vision-preview', 'llama-3.2-11b-vision-preview']
-  
+  const VISION_MODELS = []
+  throw new Error('Groq Vision models are decommissioned. Using fallback.')
   let lastError = null
   for (const model of VISION_MODELS) {
     try {
@@ -188,8 +188,8 @@ Return ONLY valid JSON.`
 
   try {
     const dataUrl = await imageToBase64(imagePath)
-    const VISION_MODELS = ['llama-3.2-90b-vision-preview', 'llama-3.2-11b-vision-preview']
-    
+    const VISION_MODELS = []
+    return null;
     for (const model of VISION_MODELS) {
       try {
         const completion = await groqClient.chat.completions.create({

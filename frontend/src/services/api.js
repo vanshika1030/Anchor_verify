@@ -23,6 +23,31 @@ async function get(url) {
   return data
 }
 
+async function downloadResource(url, fallbackName) {
+  const res = await fetch(url)
+  if (!res.ok) {
+    let message = `Download failed: ${res.status}`
+    try {
+      const body = await res.json()
+      message = body.error || message
+    } catch {
+      // Keep the status-based message when the response is not JSON.
+    }
+    throw new Error(message)
+  }
+
+  const blob = await res.blob()
+  const objectUrl = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = objectUrl
+  link.download = fallbackName
+  link.style.display = 'none'
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000)
+}
+
 // ─── Extract ─────────────────────────────────────────────────────────
 
 /** Send anchor image files to backend for extraction */
@@ -97,9 +122,26 @@ export function getTemplateURL(category = 'Topwear') {
   return `${API}/csv/template?category=${category}`
 }
 
+/** Download a template without navigating away from the seller workspace. */
+export async function downloadTemplate(category = 'Topwear') {
+  const safeCategory = category || 'Topwear'
+  return downloadResource(
+    getTemplateURL(safeCategory),
+    `${safeCategory.toLowerCase()}_template.csv`,
+  )
+}
+
 /** Download CSV at stage */
 export function getDownloadURL(sessionId, stage) {
   return `${API}/csv/${sessionId}/download/${stage}`
+}
+
+/** Download a processed CSV without navigating away from the current screen. */
+export async function downloadCSVStage(sessionId, stage) {
+  return downloadResource(
+    getDownloadURL(sessionId, stage),
+    `${stage || 'catalog'}_products.csv`,
+  )
 }
 
 // ─── Health ──────────────────────────────────────────────────────────

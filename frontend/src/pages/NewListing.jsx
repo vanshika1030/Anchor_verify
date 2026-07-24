@@ -1,9 +1,66 @@
 import { useState, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Download, Upload as UploadIcon, Sparkles, Check, ArrowRight, Camera, X } from 'lucide-react';
+import { Download, Upload as UploadIcon, Sparkles, Check, ArrowRight, Camera, X, ShieldCheck, Clock3, Loader2 } from 'lucide-react';
 import Papa from 'papaparse';
 import { useApp } from '../AppContext';
-import { extractAnchorAttributes, getTemplateURL, uploadCSV } from '../services/api';
+import { downloadTemplate, extractAnchorAttributes, uploadCSV } from '../services/api';
+
+const CATALOG_IMAGE_FIELDS = [
+  'catalogImage_front',
+  'catalogImage_back',
+  'catalogImage_side',
+  'catalogImage_closeup',
+  'catalogImage_full',
+];
+
+const normalizeCatalogUrl = value => {
+  if (!value) return null;
+  if (/^https?:\/\//i.test(value) || value.startsWith('data:') || value.startsWith('blob:')) return value;
+  return `http://localhost:3001/${String(value).replace(/^\/+/, '')}`;
+};
+
+const buildCsvSizeChart = row => {
+  const chart = {};
+  Object.entries(row || {}).forEach(([key, value]) => {
+    const match = key.match(/^sizeChart_([^_]+)_(.+)$/i);
+    if (!match || value === '') return;
+    const [, size, measurement] = match;
+    if (!chart[size]) chart[size] = {};
+    const numeric = Number(value);
+    chart[size][measurement.toLowerCase()] = Number.isFinite(numeric) ? numeric : value;
+  });
+  return chart;
+};
+
+const mapSellerAttributes = row => ({
+  style_id: row.styleId,
+  product_title: row.productTitle,
+  garment_type: row.articleType,
+  primary_color: row.primaryColour || row.brandColour,
+  secondary_color: row.secondaryColour,
+  pattern_type: row.pattern,
+  neck_type: row.neckType,
+  sleeve_length: row.sleeveLength,
+  fit: row.fit,
+  fabric_composition: row.fabric,
+  fabric_appearance: row.fabric,
+  occasion_style: row.occasion,
+  overall_length: row.garmentLength,
+  hemline: row.hemline,
+  transparency: row.transparency,
+  embellishment: row.embellishment,
+  dupatta: row.dupatta,
+  wash_care: row.washCare,
+  gender: row.gender,
+  brand: row.brand,
+  model_size: row.modelSize,
+  model_height: row.modelHeight,
+  model_build: row.modelBuild,
+  description: row.description,
+  tags: row.tags,
+  mrp: row.mrp,
+  selling_price: row.sellingPrice,
+});
 
 export default function NewListing() {
   const navigate = useNavigate();
@@ -12,9 +69,10 @@ export default function NewListing() {
     setAnchorExtracted, setExtracting, extracting,
     setAnchorFront, setAnchorBack, setAnchorCloseup,
     anchorFront, anchorBack, anchorCloseup,
-    sizeChart, setSizeChart,
+    sizeChart, setSizeChart, setSizeChartMeasurements,
     setMode, setConfirmedAttrs, setCatalogFiles, setCatalogPreviews,
-    setCsvSessionId
+    setCsvSessionId, setComparisonResult, setFabricResult, setPhashResult,
+    setVerdict, setModelIssues, setCsvRowIndex, setSellerListing
   } = useApp();
 
   // Clear global state on mount to prevent bleed-over
@@ -23,17 +81,26 @@ export default function NewListing() {
     setAnchorBack(null);
     setAnchorCloseup(null);
     setSizeChart(null);
+    setSizeChartMeasurements(null);
     setCatalogFiles([]);
     setCatalogPreviews([]);
     setConfirmedAttrs(null);
     setAnchorExtracted(null);
     setCsvSessionId(null);
+    setCsvRowIndex(null);
+    setSellerListing(null);
+    setComparisonResult(null);
+    setFabricResult(null);
+    setPhashResult(null);
+    setVerdict(null);
+    setModelIssues([]);
   }, []);
 
   // LEFT COLUMN STATE
   const [csvFile, setCsvFile] = useState(null);
   const [csvData, setCsvData] = useState(null);
   const [leftLoading, setLeftLoading] = useState(false);
+  const [downloadingTemplate, setDownloadingTemplate] = useState(false);
   const csvInputRef = useRef(null);
   const [error, setError] = useState('');
   const [isRightPanelCollapsed, setIsRightPanelCollapsed] = useState(false);
@@ -65,9 +132,21 @@ export default function NewListing() {
   const rightSizeRef = useRef(null);
 
   // --- LEFT COLUMN HANDLERS ---
-  const handleDownloadTemplate = () => {
-    if (!selectedCategory) return alert('Please select a category first');
-    window.location.href = getTemplateURL(selectedCategory);
+  const handleDownloadTemplate = async () => {
+    if (!selectedCategory) {
+      setError('Choose a category before downloading its CSV template.');
+      return;
+    }
+
+    setDownloadingTemplate(true);
+    setError('');
+    try {
+      await downloadTemplate(selectedCategory);
+    } catch (err) {
+      setError(err.message || 'The CSV template could not be downloaded.');
+    } finally {
+      setDownloadingTemplate(false);
+    }
   };
 
   const handleUploadCSV = (e) => {
@@ -111,35 +190,20 @@ export default function NewListing() {
       setCsvSessionId(csvRes.sessionId);
       
       const firstRow = csvRes.preview[0];
+      const sellerRow = csvRes.sourcePreview?.[0] || firstRow;
+      setCsvRowIndex(0);
+      setSellerListing(sellerRow);
       
       // 2. Extract catalog images from the row
-      const catalogPaths = [];
-      ['catalogImage_front', 'catalogImage_back', 'catalogImage_side', 'catalogImage_closeup', 'catalogImage_full'].forEach(key => {
-        if (firstRow[key]) {
-          catalogPaths.push(firstRow[key]);
-        }
-      });
+      const catalogPaths = CATALOG_IMAGE_FIELDS.map(key => firstRow[key]).filter(Boolean);
       setCatalogFiles(catalogPaths);
-      setCatalogPreviews(catalogPaths.map(p => `http://localhost:3001/${p}`));
+      setCatalogPreviews(catalogPaths.map(normalizeCatalogUrl).filter(Boolean));
       
       // 3. Map attributes for verification
-      const mappedAttrs = {
-        garment_type: firstRow.articleType,
-        primary_color: firstRow.primaryColour,
-        secondary_color: firstRow.secondaryColour,
-        pattern_type: firstRow.pattern,
-        neck_type: firstRow.neckType,
-        sleeve_length: firstRow.sleeveLength,
-        fit: firstRow.fit,
-        fabric_composition: firstRow.fabric,
-        occasion_style: firstRow.occasion,
-        overall_length: firstRow.garmentLength,
-        hemline: firstRow.hemline,
-        brand: firstRow.brand,
-        model_size: firstRow.modelSize,
-        model_height: firstRow.modelHeight
-      };
+      const mappedAttrs = mapSellerAttributes(sellerRow);
       setConfirmedAttrs(mappedAttrs);
+      const csvSizeChart = buildCsvSizeChart(sellerRow);
+      setSizeChartMeasurements(csvSizeChart);
       
       // Push local images to global state now
       if (leftFront) setAnchorFront(leftFront);
@@ -195,7 +259,7 @@ export default function NewListing() {
   };
 
   const [rightModelSize, setRightModelSize] = useState('M');
-  const [rightModelHeight, setRightModelHeight] = useState('5\'6"');
+  const [rightModelHeight, setRightModelHeight] = useState('5\'4"');
 
   const handleExtractAttributes = async () => {
     if (!anchorFront && !anchorBack && !anchorCloseup) return;
@@ -220,11 +284,24 @@ export default function NewListing() {
   };
 
   return (
-    <div style={{ maxWidth: '1200px', margin: '0 auto', position: 'relative' }}>
-      <div style={{ display: 'flex', gap: '40px', minHeight: '80vh', position: 'relative' }}>
+    <main className="listing-page page-shell" style={{ position: 'relative' }}>
+      <section className="workflow-intro">
+        <div className="workflow-intro-copy">
+          <div className="section-kicker">Create a Myntra-ready listing</div>
+          <h1>Choose the workflow that fits your catalog.</h1>
+          <p>Upload an existing sheet or let Anchor build the listing from your product photos.</p>
+        </div>
+        <div className="workflow-benefits" aria-label="Workflow benefits">
+          <span><ShieldCheck size={13} color="var(--success)" /> Anchor-verified</span>
+          <span><Sparkles size={13} color="var(--accent)" /> 5 model angles</span>
+          <span><Clock3 size={13} color="#dd8a00" /> Guided setup</span>
+        </div>
+      </section>
+
+      <div className="workflow-grid" style={{ display: 'flex', gap: '40px', minHeight: '80vh', position: 'relative' }}>
         
         {/* === LEFT COLUMN === */}
-        <div style={{ 
+        <section className="listing-panel listing-panel--manual" style={{
           flex: isRightPanelCollapsed ? '1' : '1 1 0%', 
           minWidth: 0,
           transition: 'all 0.4s cubic-bezier(0.4, 0, 0.2, 1)',
@@ -256,14 +333,23 @@ export default function NewListing() {
           <div style={{ marginBottom: '24px' }}>
             <label className="form-label">Step 2: Upload Data</label>
             <div style={{ display: 'flex', gap: '12px' }}>
-              <button className="btn btn-outline" onClick={handleDownloadTemplate} style={{ flex: 1 }}>
-                <Download size={16} /> Download CSV Template
+              <button
+                type="button"
+                className="btn btn-outline"
+                onClick={handleDownloadTemplate}
+                disabled={downloadingTemplate}
+                style={{ flex: 1 }}
+              >
+                {downloadingTemplate
+                  ? <><Loader2 size={16} className="spin" /> Preparing template…</>
+                  : <><Download size={16} /> Download CSV Template</>}
               </button>
               <input type="file" accept=".csv" ref={csvInputRef} hidden onChange={handleUploadCSV} />
               <button className="btn btn-primary" onClick={() => csvInputRef.current?.click()} style={{ flex: 1 }}>
                 <UploadIcon size={16} /> Upload CSV File
               </button>
             </div>
+            {error && <div className="inline-form-alert" role="alert">{error}</div>}
             {csvFile && <div style={{ fontSize: '12px', color: 'var(--success)', marginTop: '8px' }}><Check size={12}/> {csvFile.name} uploaded</div>}
           </div>
 
@@ -330,11 +416,11 @@ export default function NewListing() {
               </button>
             </div>
           )}
-        </div>
+        </section>
 
         {/* === VERTICAL DIVIDER === */}
         {!isRightPanelCollapsed && (
-          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', transition: 'opacity 0.4s ease', opacity: isRightPanelCollapsed ? 0 : 1 }}>
+          <div className="workflow-divider" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', transition: 'opacity 0.4s ease', opacity: isRightPanelCollapsed ? 0 : 1 }}>
             <div style={{ width: '1px', background: 'var(--border)', flex: 1 }}></div>
             <div style={{ 
               padding: '8px 12px', 
@@ -345,24 +431,24 @@ export default function NewListing() {
               fontWeight: '600',
               color: 'var(--text-tertiary)',
               margin: '16px 0'
-            }}>OR</div>
+            }} className="workflow-divider-label">OR</div>
             <div style={{ width: '1px', background: 'var(--border)', flex: 1 }}></div>
           </div>
         )}
 
         {/* === RIGHT COLUMN === */}
-        <div style={{ 
+        <section className={`listing-panel listing-panel--ai ${isRightPanelCollapsed ? 'is-collapsed' : ''}`} style={{
           flex: isRightPanelCollapsed ? '0 0 60px' : '1 1 0%',
           minWidth: isRightPanelCollapsed ? '60px' : '0',
           height: isRightPanelCollapsed ? '60px' : 'auto',
           position: isRightPanelCollapsed ? 'absolute' : 'relative',
           bottom: isRightPanelCollapsed ? '24px' : 'auto',
           right: isRightPanelCollapsed ? '0px' : 'auto',
-          padding: isRightPanelCollapsed ? '0' : '24px', 
-          background: isRightPanelCollapsed ? 'linear-gradient(45deg, #ff3f6c, #f77062)' : 'linear-gradient(to bottom, #fff, #fff0f4)', 
-          borderRadius: isRightPanelCollapsed ? '30px' : '16px', 
-          border: isRightPanelCollapsed ? 'none' : '1px solid #ff3f6c30',
-          boxShadow: isRightPanelCollapsed ? '0 4px 15px rgba(255, 63, 108, 0.4)' : 'none',
+          padding: isRightPanelCollapsed ? '0' : '24px',
+          background: isRightPanelCollapsed ? 'linear-gradient(45deg, var(--accent), var(--coral))' : 'linear-gradient(to bottom, #fff, var(--bg-highlight))',
+          borderRadius: isRightPanelCollapsed ? '30px' : '16px',
+          border: isRightPanelCollapsed ? 'none' : '1px solid var(--accent-light)',
+          boxShadow: isRightPanelCollapsed ? '0 7px 20px var(--accent-light)' : 'none',
           overflow: 'hidden',
           transition: 'all 0.4s cubic-bezier(0.4, 0, 0.2, 1)',
           cursor: isRightPanelCollapsed ? 'pointer' : 'default',
@@ -376,11 +462,11 @@ export default function NewListing() {
             <Sparkles size={24} color="white" />
           ) : (
             <div style={{ width: '100%', opacity: isRightPanelCollapsed ? 0 : 1, transition: 'opacity 0.3s ease', transitionDelay: isRightPanelCollapsed ? '0s' : '0.2s' }}>
-              <div style={{ position: 'absolute', top: 24, right: 24, background: 'linear-gradient(45deg, #ff3f6c, #f77062)', color: 'white', padding: '4px 12px', borderRadius: '20px', fontSize: '12px', fontWeight: '600', display: 'flex', alignItems: 'center', gap: '4px' }}>
+              <div style={{ position: 'absolute', top: 24, right: 24, background: 'linear-gradient(45deg, var(--accent), var(--coral))', color: 'white', padding: '4px 12px', borderRadius: '20px', fontSize: '12px', fontWeight: '600', display: 'flex', alignItems: 'center', gap: '4px' }}>
                 <Sparkles size={14} /> AI-Powered
               </div>
               
-              <h2 style={{ fontSize: '20px', fontWeight: '700', marginBottom: '8px', color: '#ff3f6c' }}>Generate with AI</h2>
+              <h2 style={{ fontSize: '20px', fontWeight: '700', marginBottom: '8px', color: 'var(--accent)' }}>Generate with AI</h2>
               <p style={{ color: 'var(--text-secondary)', marginBottom: '24px', fontSize: '14px' }}>
                 Auto-generate catalog details from raw images.
               </p>
@@ -482,9 +568,9 @@ export default function NewListing() {
                 </div>
               </div>
 
-              <button 
-                className="btn btn-primary" 
-                style={{ width: '100%', background: 'linear-gradient(45deg, #ff3f6c, #f77062)', border: 'none' }} 
+              <button
+                className="btn btn-primary"
+                style={{ width: '100%', background: 'linear-gradient(45deg, var(--accent), var(--coral))', border: 'none' }}
                 onClick={handleExtractAttributes}
                 disabled={(!anchorFront && !anchorBack && !anchorCloseup) || extracting}
               >
@@ -549,9 +635,9 @@ export default function NewListing() {
               )}
             </div>
 
-              <button 
-                className="btn btn-primary" 
-                style={{ width: '100%', background: 'linear-gradient(45deg, #ff3f6c, #f77062)', border: 'none' }} 
+              <button
+                className="btn btn-primary"
+                style={{ width: '100%', background: 'linear-gradient(45deg, var(--accent), var(--coral))', border: 'none' }}
                 onClick={() => {
                   if (Object.keys(extractedAttrs || {}).length === 0) {
                     alert('Please enter at least the garment type to proceed.');
@@ -587,8 +673,8 @@ export default function NewListing() {
           
             </div>
           )}
-        </div>
+        </section>
       </div>
-    </div>
+    </main>
   );
 }

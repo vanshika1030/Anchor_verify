@@ -1,12 +1,23 @@
 import React, { useState, useEffect, useRef } from 'react'
+import { createPortal } from 'react-dom'
 import { useNavigate } from 'react-router-dom'
 import { useApp } from '../AppContext'
 import Stepper from '../components/Stepper'
 import { runVerification, updateCSVRow } from '../services/api'
-import { CheckCircle, XCircle, AlertTriangle, ArrowRight, Eye, Loader, Sparkles, Package, Tag, ChevronLeft, ChevronRight } from 'lucide-react'
+import { CheckCircle, XCircle, AlertTriangle, ArrowRight, Eye, Loader, Sparkles, Package, Tag, ChevronLeft, ChevronRight, ShieldCheck } from 'lucide-react'
 
 const FLOW = ['Upload', 'Details', 'Verify', 'Publish']
 const CONFIDENCE_DOT = { HIGH: 'var(--success)', MEDIUM: 'var(--warning)', LOW: 'var(--danger)' }
+const ANGLE_LABELS = { front: 'Front', back: 'Back', side: 'Side', closeup: 'Close-up', full: 'Full body' }
+const CATALOG_VIEW_LABELS = ['Front', 'Back', 'Side', 'Close-up', 'Full body']
+const EDITABLE_ATTRIBUTES = [
+  ['garment_type', 'Product type'],
+  ['primary_color', 'Colour'],
+  ['fabric_appearance', 'Fabric'],
+  ['pattern_type', 'Pattern'],
+  ['fit', 'Fit'],
+  ['occasion_style', 'Occasion'],
+]
 
 // Safely extract a displayable string from an attribute that might be
 // a plain string OR a {value, confidence, source} object.
@@ -14,6 +25,43 @@ const safeVal = (v, fallback = '') =>
   v == null ? fallback
     : typeof v === 'object' ? (v.value ?? fallback)
     : v
+
+const displayText = value =>
+  Array.isArray(value) ? value.join(' > ') : String(safeVal(value, ''))
+
+const normalizeText = value =>
+  displayText(value).trim().replace(/\s+/g, ' ').toLowerCase()
+
+const toTagList = value => {
+  const source = Array.isArray(value) ? value : String(safeVal(value, '')).split(',')
+  const seen = new Set()
+
+  return source
+    .map(tag => String(tag).trim().replace(/^#+/, ''))
+    .filter(tag => {
+      const normalized = normalizeText(tag)
+      if (!normalized || seen.has(normalized)) return false
+      seen.add(normalized)
+      return true
+    })
+}
+
+const tagsMatch = (left, right) => {
+  const normalize = value => toTagList(value).map(normalizeText).sort()
+  return JSON.stringify(normalize(left)) === JSON.stringify(normalize(right))
+}
+
+function CatalogPreviewImage({ src, alt, style }) {
+  const [failed, setFailed] = useState(false)
+  if (failed) {
+    return (
+      <div className="img-placeholder" style={{ ...style, display: 'grid', placeItems: 'center', minHeight: 150 }}>
+        Image unavailable
+      </div>
+    )
+  }
+  return <img src={src} alt={alt} style={style} onError={() => setFailed(true)} />
+}
 
 const ATTR_LABELS = {
   garment_type: 'Garment type', primary_color: 'Primary color', secondary_color: 'Secondary color',
@@ -25,6 +73,8 @@ const ATTR_LABELS = {
   structural_features: 'Features', model_apparent_height: 'Model height (detected)',
   model_apparent_build: 'Model build (detected)', model_build: 'Model build (CLIP)',
   model_height_range: 'Model height (CLIP)', cv_overall_length: 'Length (geometric)',
+  catalog_view_coverage: 'Catalog view coverage', back_print_preservation: 'Back print preservation',
+  model_build_declared: 'Model body build', catalog_size_chart_fit: 'Catalog image vs size chart',
 }
 
 export default function Verify() {
@@ -38,8 +88,12 @@ export default function Verify() {
     phashResult, setPhashResult,
     verdict, setVerdict,
     modelIssues, setModelIssues,
-    csvSessionId, csvRowIndex,
+    csvSessionId, csvRowIndex, sellerListing,
   } = useApp()
+
+  // Verification requires seller catalog photos; with anchors only, this is
+  // always the AI generation flow even if a stale context mode survived a retry.
+  const requestedMode = mode === 'generate' || (catalogFiles?.length || 0) === 0 ? 'generate' : mode
 
   const [acceptedCorrections, setAcceptedCorrections] = useState({})
   const [ignoreConfirm, setIgnoreConfirm] = useState(null)
@@ -51,7 +105,10 @@ export default function Verify() {
   const [generatedMetadata, setGeneratedMetadata] = useState(null)
   const [enhancedMetadata, setEnhancedMetadata] = useState(null)
   const [corrections, setCorrections] = useState(null)
-  const [actualMode, setActualMode] = useState(mode)
+  const [suggestionAgent, setSuggestionAgent] = useState(null)
+  const [catalogEvidenceDiagnostics, setCatalogEvidenceDiagnostics] = useState([])
+  const [sizeChartEvidence, setSizeChartEvidence] = useState(null)
+  const [actualMode, setActualMode] = useState(requestedMode)
   const [fabricReExtracted, setFabricReExtracted] = useState(null)
   const [enhancementsApplied, setEnhancementsApplied] = useState(false)
   const [currentSlide, setCurrentSlide] = useState(0)
@@ -69,7 +126,9 @@ export default function Verify() {
 
   const hasRun = useRef(false)
   useEffect(() => {
-    if (comparisonResult && verdict) {
+    // Generate-mode metadata is local to this page, so a replacement/retry must
+    // rebuild it even when an earlier comparison is still present in context.
+    if (requestedMode !== 'generate' && comparisonResult && verdict) {
       setLoading(false)
       return
     }
@@ -81,6 +140,7 @@ export default function Verify() {
   async function doVerification() {
     setLoading(true)
     setError(null)
+    let completionDelay = 1200
     try {
       // Collect ALL anchor files
       const anchorFiles = [anchorFront?.file, anchorBack?.file, anchorCloseup?.file].filter(Boolean)
@@ -102,11 +162,14 @@ export default function Verify() {
         sizeChartMeasurements: sizeChartMeasurements || null,
         declaredAttrs: confirmedAttrs || {},
         anchorExtracted: anchorExtracted || {},
-        mode: mode,
+        mode: requestedMode,
       })
 
       setComparisonResult(result.comparison || [])
       setCatalogExtracted(result.catalog_attributes || null)
+      if (result.mode === 'generate' && result.catalog_attributes) {
+        setConfirmedAttrs(previous => ({ ...(previous || {}), ...result.catalog_attributes }))
+      }
       setModelIssues(result.modelIssues || [])
       setFabricResult(result.fabricResult || null)
       setPhashResult(result.phashResult || null)
@@ -114,10 +177,12 @@ export default function Verify() {
       if (result.generatedMetadata) setGeneratedMetadata(result.generatedMetadata)
       if (result.enhancedMetadata) setEnhancedMetadata(result.enhancedMetadata)
       if (result.corrections) setCorrections(result.corrections)
+      if (result.suggestionAgent) setSuggestionAgent(result.suggestionAgent)
+      if (result.catalogEvidenceDiagnostics) setCatalogEvidenceDiagnostics(result.catalogEvidenceDiagnostics)
+      if (result.sizeChartEvidence) setSizeChartEvidence(result.sizeChartEvidence)
       if (result.mode) setActualMode(result.mode)
-      if (result.generatedMetadata) {
-        setGeneratedMetadata(result.generatedMetadata)
-      }
+      setCurrentSlide(0)
+      completionDelay = result.cache?.status === 'hit' ? 350 : 1200
       
       setChecklistStep(4) // All done
 
@@ -132,82 +197,127 @@ export default function Verify() {
       setChecklistStep(5)
       setTimeout(() => {
         setLoading(false)
-      }, 2000)
+      }, completionDelay)
     }
   }
 
   const fileToDataUrl = (file) => new Promise((resolve) => {
-    if (!file) return resolve(null);
-    const reader = new FileReader();
-    reader.onload = (e) => resolve(e.target.result);
-    reader.readAsDataURL(file);
-  });
+    if (!file) return resolve(null)
+    if (typeof file === 'string') return resolve(file)
+    if (!(file instanceof Blob)) return resolve(null)
+    const reader = new FileReader()
+    reader.onload = (event) => resolve(event.target.result)
+    reader.onerror = () => resolve(null)
+    reader.readAsDataURL(file)
+  })
 
   const handlePublish = async () => {
-    const v = verdict
-    if (csvSessionId && csvRowIndex !== null && v) {
-      const updates = {
-        anchorVerificationStatus: v.status,
-        anchorMismatchCount: (comparisonResult || []).filter(r => r.status === 'mismatch').length,
-        anchorVerificationNotes: v.reason || '',
-      }
-      
-      if (enhancementsApplied && enhancedMetadata) {
-        updates.productTitle = enhancedMetadata.title;
-        updates.description = enhancedMetadata.description;
-        updates.tags = enhancedMetadata.tags?.join(', ');
-      }
+    // Keep the business rule in the handler as well as the disabled UI so a
+    // stale click or programmatic submit cannot publish failed verification.
+    if (publishGate.blocked) return
 
-      try {
-        await updateCSVRow(csvSessionId, csvRowIndex, updates, 'published')
-      } catch (err) {
-        console.error('Failed to update CSV row:', err)
-      }
-    }
-
-    // Save to database
     try {
       const token = sessionStorage.getItem('token')
-      const attrs = anchorExtracted || {}
-      
       const headers = { 'Content-Type': 'application/json' }
       if (token) headers['Authorization'] = `Bearer ${token}`
 
-      const base64Anchor = await fileToDataUrl(anchorFront?.file);
-      const catalogDataUrls = [];
-      if (catalogFiles && catalogFiles.length > 0) {
-        for (const file of catalogFiles) {
-          const url = await fileToDataUrl(file);
-          if (url) catalogDataUrls.push(url);
-        }
+      const base64Anchor = await fileToDataUrl(anchorFront?.file)
+      const uploadedCatalogImages = []
+      for (const file of (catalogFiles || [])) {
+        const image = await fileToDataUrl(file)
+        if (image) uploadedCatalogImages.push(image)
       }
+      const catalogImages = actualMode === 'generate'
+        ? (Array.isArray(generatedMetadata?.generated_image_url)
+            ? generatedMetadata.generated_image_url.map(image => image?.url || image).filter(Boolean)
+            : [generatedMetadata?.generated_image_url?.url || generatedMetadata?.generated_image_url].filter(Boolean))
+        : [...new Set([...(catalogPreviews || []), ...uploadedCatalogImages].filter(Boolean))]
 
-      await fetch('http://localhost:3001/api/products', {
+      const seller = sellerListing || {}
+      const sellerTitle = seller.productTitle || safeVal(confirmedAttrs?.product_title) || safeVal(confirmedAttrs?.garment_type) || 'Product'
+      const sellerDescription = seller.description || safeVal(confirmedAttrs?.description)
+      const sellerTags = String(seller.tags || safeVal(confirmedAttrs?.tags) || '')
+        .split(',')
+        .map(tag => tag.trim())
+        .filter(Boolean)
+      const publishEnhanced = actualMode === 'generate' || enhancementsApplied
+      const finalMetadata = actualMode === 'generate'
+        ? generatedMetadata
+        : enhancedMetadata
+          ? { ...enhancedMetadata, tags: toTagList(enhancedMetadata.tags) }
+          : null
+      const v = verdict || {}
+
+      const response = await fetch('http://localhost:3001/api/products', {
         method: 'POST',
         headers,
         body: JSON.stringify({
-          title: actualMode === 'generate' ? generatedMetadata?.title : (enhancedMetadata?.title || attrs.garment_type || 'Product'),
-          description: actualMode === 'generate' ? generatedMetadata?.description : (enhancedMetadata?.description || ''),
-          tags: actualMode === 'generate' ? (generatedMetadata?.tags || []) : (enhancedMetadata?.tags || []),
-          article_type: attrs.garment_type || '',
-          category: attrs.garment_type || '',
-          brand_name: confirmedAttrs?.brand || 'Brand',
-          attributes: attrs,
-          verdict: v,
-          verification_status: v?.status?.toLowerCase() || 'unverified',
+          style_code: seller.styleId || safeVal(confirmedAttrs?.style_id) || null,
+          title: publishEnhanced && finalMetadata?.title ? finalMetadata.title : sellerTitle,
+          description: publishEnhanced && finalMetadata?.description ? finalMetadata.description : sellerDescription,
+          tags: publishEnhanced && finalMetadata?.tags?.length ? finalMetadata.tags : sellerTags,
+          article_type: seller.articleType || safeVal(confirmedAttrs?.garment_type) || '',
+          category: publishEnhanced && (finalMetadata?.category_path || finalMetadata?.category)
+            ? (finalMetadata.category_path || finalMetadata.category)
+            : [seller.gender, seller.category, seller.articleType].filter(Boolean).join(' > '),
+          brand_name: seller.brand || safeVal(confirmedAttrs?.brand) || 'Brand',
+          mrp: Number(seller.mrp || safeVal(confirmedAttrs?.mrp)) || null,
+          selling_price: Number(seller.sellingPrice || safeVal(confirmedAttrs?.selling_price)) || null,
+          attributes: { ...(confirmedAttrs || {}) },
+          size_chart: sizeChartEvidence || sizeChartMeasurements || null,
+          verification_status: 'published',
           verification_score: v?.overall_similarity || null,
           anchor_image_url: base64Anchor || anchorFront?.preview || null,
-          catalog_images: actualMode === 'generate' ? 
-            (Array.isArray(generatedMetadata?.generated_image_url) ? 
-              generatedMetadata.generated_image_url : 
-              [generatedMetadata?.generated_image_url]) : (catalogDataUrls.length > 0 ? catalogDataUrls : null)
+          catalog_images: catalogImages,
+          ai_model_images: actualMode === 'generate' ? catalogImages : [],
+          seller_metadata: seller,
+          verification_report: {
+            verdict: v,
+            comparison: comparisonResult || [],
+            model_issues: modelIssues || [],
+            fabric: fabricResult || null,
+            perceptual_hash: phashResult || null,
+            catalog_evidence: catalogEvidenceDiagnostics,
+            enhancements_applied: enhancementsApplied,
+          },
+          suggestions: suggestionAgent,
         })
       })
+      const savedProduct = await response.json()
+      if (!response.ok) throw new Error(savedProduct.error || 'Could not publish this listing')
+
+      if (csvSessionId && csvRowIndex !== null) {
+        const updates = {
+          anchorVerificationStatus: v.status || 'PUBLISHED',
+          anchorMismatchCount: (comparisonResult || []).filter(row => row.status === 'mismatch').length,
+          anchorVerificationNotes: v.reason || '',
+        }
+        if (enhancementsApplied && metadataChanges.length > 0) {
+          const changedFields = new Set(metadataChanges.map(change => change.key))
+          if (changedFields.has('title')) updates.productTitle = proposedListingMetadata.title
+          if (changedFields.has('description')) updates.description = proposedListingMetadata.description
+          if (changedFields.has('tags')) updates.tags = proposedListingMetadata.tags.join(', ')
+        }
+        await updateCSVRow(csvSessionId, csvRowIndex, updates, 'published')
+      }
+
+      nav('/new-listing/success', { state: { productId: savedProduct.id } })
     } catch (err) {
       console.error('Failed to save product:', err)
+      setError(err.message)
     }
+  }
 
-    nav('/new-listing/success')
+  const updateConfirmedAttribute = (key, value) => {
+    setConfirmedAttrs(prev => {
+      const current = prev?.[key]
+      const nextValue = current && typeof current === 'object' ? { ...current, value } : value
+      return { ...(prev || {}), [key]: nextValue }
+    })
+  }
+
+  const updateGeneratedMetadata = (key, value) => {
+    setGeneratedMetadata(prev => ({ ...(prev || {}), [key]: value }))
   }
 
   // ── Loading state ──
@@ -278,9 +388,8 @@ export default function Verify() {
       if (acceptedVal === 'IGNORED') {
         return {
           ...r,
-          status: 'match',
           seller_override: true,
-          note: 'Seller confirmed original value'
+          note: `Suggestion ignored; this evidence remains unresolved. ${r.note || ''}`.trim()
         }
       } else {
         return {
@@ -294,8 +403,12 @@ export default function Verify() {
     return r
   })
 
-  const failCount = rows.filter(r => r.status === 'mismatch' && r.severity === 'HIGH').length + (modelIssues?.length || 0)
-  const warnCount = rows.filter(r => r.status === 'mismatch' && r.severity !== 'HIGH').length + rows.filter(r => r.status === 'warning').length
+  const criticalModelIssues = (modelIssues || []).filter(issue => issue.severity === 'HIGH')
+  const warningModelIssues = (modelIssues || []).filter(issue => issue.severity !== 'HIGH')
+  const failCount = rows.filter(r => r.status === 'mismatch' && r.severity === 'HIGH').length + criticalModelIssues.length
+  const warnCount = rows.filter(r => r.status === 'mismatch' && r.severity !== 'HIGH').length +
+    rows.filter(r => r.status === 'warning').length +
+    warningModelIssues.length
   const passCount = rows.filter(r => r.status === 'match').length
   const skipCount = rows.filter(r => r.status === 'skip').length
 
@@ -322,8 +435,84 @@ export default function Verify() {
     }
   }
 
+  const originalListingMetadata = {
+    title: sellerListing?.productTitle || safeVal(confirmedAttrs?.product_title, ''),
+    description: sellerListing?.description || safeVal(confirmedAttrs?.description, ''),
+    category: sellerListing?.articleType || safeVal(confirmedAttrs?.garment_type, ''),
+    tags: toTagList(sellerListing?.tags || safeVal(confirmedAttrs?.tags, '')),
+  }
+  const proposedListingMetadata = {
+    title: displayText(enhancedMetadata?.title),
+    description: displayText(enhancedMetadata?.description),
+    category: displayText(enhancedMetadata?.category_path || enhancedMetadata?.category),
+    tags: toTagList(enhancedMetadata?.tags),
+  }
+  const metadataChanges = enhancedMetadata ? [
+    {
+      key: 'title',
+      label: 'Product title',
+      current: originalListingMetadata.title,
+      suggested: proposedListingMetadata.title,
+      changed: Boolean(normalizeText(proposedListingMetadata.title)) &&
+        normalizeText(originalListingMetadata.title) !== normalizeText(proposedListingMetadata.title),
+    },
+    {
+      key: 'description',
+      label: 'Description',
+      current: originalListingMetadata.description,
+      suggested: proposedListingMetadata.description,
+      changed: Boolean(normalizeText(proposedListingMetadata.description)) &&
+        normalizeText(originalListingMetadata.description) !== normalizeText(proposedListingMetadata.description),
+    },
+    {
+      key: 'category',
+      label: 'Category',
+      current: originalListingMetadata.category,
+      suggested: proposedListingMetadata.category,
+      changed: Boolean(normalizeText(proposedListingMetadata.category)) &&
+        normalizeText(originalListingMetadata.category) !== normalizeText(proposedListingMetadata.category),
+    },
+    {
+      key: 'tags',
+      label: 'Search tags',
+      current: originalListingMetadata.tags,
+      suggested: proposedListingMetadata.tags,
+      changed: proposedListingMetadata.tags.length > 0 &&
+        !tagsMatch(originalListingMetadata.tags, proposedListingMetadata.tags),
+    },
+  ].filter(change => change.changed) : []
+
+  const unresolvedCriticalRows = rows.filter(row => row.status === 'mismatch' && row.severity === 'HIGH')
+  const criticalEvidenceText = [
+    ...unresolvedCriticalRows.flatMap(row => [row.key, row.label, row.note]),
+    ...criticalModelIssues.flatMap(issue => [issue.attr, issue.note]),
+  ].join(' ').toLowerCase()
+  const hasSizeConflict = /(size chart|size_chart|catalog image vs size|catalog fit vs size|model build vs size)/.test(criticalEvidenceText)
+  const hasCatalogImageConflict = /(overall visual|visual identity|catalog garment|garment length|catalog image|back print|fabric|model body|model build)/.test(criticalEvidenceText)
+  const hasUsableEvidence = rows.some(row => ['match', 'mismatch', 'warning'].includes(row.status))
+  const publishGate = {
+    blocked: v.status === 'FAIL' || v.status === 'UNVERIFIED' || !hasUsableEvidence,
+    message: !hasUsableEvidence || v.status === 'UNVERIFIED'
+      ? 'Verification produced no usable evidence. Retry verification before publishing.'
+      : hasCatalogImageConflict && hasSizeConflict
+        ? 'Publishing is blocked. Fix or replace the catalog images first. The size/length evidence also conflicts, so update the listing metadata or size chart, or replace the catalog image, then verify again.'
+        : hasCatalogImageConflict
+          ? 'Publishing is blocked because the catalog images are not consistent with the anchor. Fix or replace the catalog images, then verify again.'
+          : hasSizeConflict
+            ? 'Publishing is blocked by a size or length conflict. Update the listing metadata or size chart, or replace the catalog image, then verify again.'
+            : 'Publishing is blocked until every critical verification finding is resolved.',
+  }
+
   return (
-    <div style={{ maxWidth: 960, margin: '0 auto' }}>
+    <main className="verify-page page-shell">
+      <div className="verify-heading">
+        <div>
+          <div className="section-kicker">Final quality check</div>
+          <h1>Review your AI catalog listing</h1>
+          <p>Confirm the imagery, product details, measurements, and match confidence before publishing.</p>
+        </div>
+        <div className="verify-assurance"><ShieldCheck size={15} /> Anchor protected</div>
+      </div>
       <Stepper steps={FLOW} current={2} />
 
       {/* Verdict banner */}
@@ -359,7 +548,7 @@ export default function Verify() {
 
       {/* 🚀 AI CORRECTION CO-PILOT */}
       {corrections && corrections.length > 0 && (
-        <div className="card" style={{ borderLeft: '4px solid var(--accent)', marginTop: 20, animation: 'fadeIn 0.5s ease' }}>
+        <div id="ai-correction-copilot" className="card" style={{ borderLeft: '4px solid var(--accent)', marginTop: 20, animation: 'fadeIn 0.5s ease' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
             <Sparkles size={20} color="var(--accent)" />
             <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--accent)' }}>AI Correction Co-Pilot</div>
@@ -420,53 +609,101 @@ export default function Verify() {
           </div>
           <div style={{ fontSize: 13, color: 'var(--text-secondary)', marginTop: 12, borderTop: '1px solid var(--border)', paddingTop: 12 }}>
             {Object.keys(acceptedCorrections).filter(k => acceptedCorrections[k] !== 'IGNORED').length} of {corrections.length} corrections applied. 
-            {Object.keys(acceptedCorrections).filter(k => acceptedCorrections[k] === 'IGNORED').length > 0 && " Ignored items will be kept as declared."}
+            {Object.keys(acceptedCorrections).filter(k => acceptedCorrections[k] === 'IGNORED').length > 0 && " Ignored items stay declared, but unresolved critical evidence can still block publishing."}
           </div>
         </div>
       )}
 
       {/* ✨ AI LISTING ENHANCER (CSV Mode only) ✨ */}
-      {enhancedMetadata && actualMode !== 'generate' && (
-        <div className="card" style={{ borderLeft: '4px solid #9c27b0', marginTop: 20, animation: 'fadeIn 0.5s ease' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
-            <Sparkles size={20} color="#9c27b0" />
-            <div style={{ fontSize: 16, fontWeight: 700, color: '#9c27b0' }}>AI Listing Enhancer</div>
-          </div>
-          <div style={{ fontSize: 14, color: 'var(--text-secondary)', marginBottom: 16 }}>
-            Our Gen-Z Trend Analyst AI reviewed your anchor image and suggested highly-optimized aesthetic tags and a better title/description. 
-          </div>
-          
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 16 }}>
-            {/* Original */}
-            <div style={{ background: 'var(--bg-highlight)', padding: 16, borderRadius: 8, border: '1px solid var(--border)' }}>
-              <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 8 }}>Original CSV Data</div>
-              <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>{safeVal(confirmedAttrs?.productTitle, 'No title provided')}</div>
-              <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 8, fontStyle: 'italic' }}>{safeVal(confirmedAttrs?.description, 'No description provided')}</div>
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
-                <span style={{ fontSize: 11, background: 'var(--bg-input)', padding: '2px 6px', borderRadius: 4, border: '1px solid var(--border)' }}>{safeVal(confirmedAttrs?.tags, 'No tags')}</span>
+      {suggestionAgent && actualMode !== 'generate' && (
+        <div className="card" style={{ marginTop: 20, border: '1px solid #ff3f6c40', background: 'linear-gradient(135deg, #fff8fa, #ffffff)' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'flex-start', marginBottom: 14 }}>
+            <div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#ff3f6c', fontWeight: 800 }}>
+                <ShieldCheck size={20} /> {suggestionAgent.name || 'Anchor Consistency Copilot'}
               </div>
+              <p style={{ margin: '6px 0 0', color: 'var(--text-secondary)', fontSize: 13, lineHeight: 1.6 }}>
+                {suggestionAgent.summary}
+              </p>
             </div>
+            <span className={`badge ${suggestionAgent.status === 'consistent' ? 'badge-pass' : 'badge-warn'}`}>
+              {suggestionAgent.status === 'consistent' ? 'Consumer-ready' : 'Review recommended'}
+            </span>
+          </div>
+          {suggestionAgent.actions?.length > 0 && (
+            <div style={{ display: 'grid', gap: 9 }}>
+              {suggestionAgent.actions.slice(0, 6).map((action, index) => (
+                <div key={`${action.field}-${index}`} style={{ padding: 12, borderRadius: 10, background: '#fff', border: '1px solid var(--border)' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12 }}>
+                    <strong style={{ fontSize: 13 }}>{action.field}</strong>
+                    <span style={{ color: action.priority === 'HIGH' ? 'var(--danger)' : 'var(--warning)', fontSize: 11, fontWeight: 800 }}>
+                      {action.priority}
+                    </span>
+                  </div>
+                  <div style={{ marginTop: 5, color: 'var(--text-secondary)', fontSize: 12 }}>{action.reason}</div>
+                  <div style={{ marginTop: 5, color: '#0f7b58', fontSize: 12 }}>
+                    Shopper impact: {action.consumer_impact}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
-            {/* AI Enhanced */}
-            <div style={{ background: 'var(--accent-lighter)', padding: 16, borderRadius: 8, border: '1px solid #ce93d8' }}>
-              <div style={{ fontSize: 11, fontWeight: 700, color: '#c084fc', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 8 }}>AI Enhanced Data</div>
-              <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4, color: '#e879f9' }}>{enhancedMetadata.title}</div>
-              <div style={{ fontSize: 12, color: '#d8b4fe', marginBottom: 8 }}>{enhancedMetadata.description}</div>
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
-                {enhancedMetadata.tags?.map((t, i) => (
-                  <span key={i} style={{ fontSize: 11, background: 'rgba(192, 132, 252, 0.15)', color: '#e879f9', padding: '4px 8px', borderRadius: 6, fontWeight: 600, border: '1px solid rgba(192, 132, 252, 0.3)' }}>#{t}</span>
-                ))}
+      {metadataChanges.length > 0 && actualMode !== 'generate' && (
+        <div className="card listing-enhancements-card">
+          <div className="listing-enhancements-head">
+            <div>
+              <div className="listing-enhancements-title">
+                <Sparkles size={19} /> Optional listing enhancements
               </div>
+              <p>Only genuinely different suggestions are shown. Your CSV stays unchanged until you apply them.</p>
             </div>
+            <span className="badge badge-warn">
+              {metadataChanges.length} improvement{metadataChanges.length === 1 ? '' : 's'}
+            </span>
           </div>
 
-          <button 
-            className={`btn ${enhancementsApplied ? 'btn-success' : 'btn-primary'}`} 
-            style={{ width: '100%', background: enhancementsApplied ? 'var(--success)' : '#9c27b0', border: 'none' }}
+          <div className="metadata-change-list">
+            {metadataChanges.map(change => (
+              <div className="metadata-change" key={change.key}>
+                <div className="metadata-change-label">{change.label}</div>
+                <div className="metadata-change-grid">
+                  <div className="metadata-value metadata-value-current">
+                    <span>Current CSV</span>
+                    {Array.isArray(change.current) ? (
+                      <div className="metadata-tags">
+                        {change.current.length > 0
+                          ? change.current.map(tag => <em key={tag}>#{tag}</em>)
+                          : <small>Not provided</small>}
+                      </div>
+                    ) : (
+                      <p>{change.current || 'Not provided'}</p>
+                    )}
+                  </div>
+                  <div className="metadata-value metadata-value-suggested">
+                    <span>AI suggestion</span>
+                    {Array.isArray(change.suggested) ? (
+                      <div className="metadata-tags">
+                        {change.suggested.map(tag => <em key={tag}>#{tag}</em>)}
+                      </div>
+                    ) : (
+                      <p>{change.suggested}</p>
+                    )}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <button
+            className={`btn ${enhancementsApplied ? 'btn-success' : 'btn-primary'}`}
+            style={{ width: '100%', background: enhancementsApplied ? 'var(--success)' : undefined }}
             onClick={() => setEnhancementsApplied(true)}
             disabled={enhancementsApplied}
           >
-            {enhancementsApplied ? <><CheckCircle size={16} /> Enhancements Applied</> : 'Apply Gen-Z Trend Enhancements to CSV'}
+            {enhancementsApplied ? <><CheckCircle size={16} /> Enhancements applied</> : 'Apply these enhancements'}
           </button>
         </div>
       )}
@@ -477,7 +714,7 @@ export default function Verify() {
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14 }}>
             <Sparkles size={18} color="var(--accent)" />
             <div className="card-title" style={{ fontSize: 15, marginBottom: 0, color: 'var(--accent)' }}>
-              Generated AI Catalog
+              AI Generated Model Images · 5 Angles
             </div>
           </div>
 
@@ -485,21 +722,21 @@ export default function Verify() {
           {Array.isArray(generatedMetadata.generated_image_url) && generatedMetadata.generated_image_url.length > 0 ? (
             <div style={{ marginBottom: 24, padding: 12, background: 'linear-gradient(to bottom, #f8f9fa, #ffffff)', borderRadius: 12, border: '1px solid #e0e0e0', boxShadow: '0 8px 24px rgba(0,0,0,0.06)' }}>
               <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 16, color: '#333', textAlign: 'center', letterSpacing: 0.5 }}>
-                🧑‍🎨 AI Model Catalog Gallery
+                Front · Back · Side · Close-up · Full body
               </div>
               
-              <div style={{ position: 'relative', width: '100%', maxWidth: '600px', margin: '0 auto', overflow: 'hidden', borderRadius: 16, aspectRatio: '3/4', boxShadow: '0 16px 40px rgba(0,0,0,0.15)' }}>
+              <div style={{ position: 'relative', width: '100%', maxWidth: '520px', margin: '0 auto', overflow: 'hidden', borderRadius: 16, aspectRatio: '3/4', background: '#fff', boxShadow: '0 16px 40px rgba(0,0,0,0.15)' }}>
                 <div style={{ display: 'flex', transition: 'transform 0.5s cubic-bezier(0.25, 1, 0.5, 1)', transform: `translateX(-${currentSlide * 100}%)`, height: '100%' }}>
                   {generatedMetadata.generated_image_url.map((img, i) => (
                     <div key={i} style={{ minWidth: '100%', height: '100%', position: 'relative' }}>
                       <img 
                         src={img.url || img} 
-                        alt={img.view ? `${img.view} view` : `View ${i + 1}`}
-                        style={{ width: '100%', height: '100%', objectFit: 'cover' }} 
+                        alt={img.view ? `${ANGLE_LABELS[img.view] || img.view} view` : `View ${i + 1}`}
+                        style={{ width: '100%', height: '100%', objectFit: 'contain', background: '#fff' }}
                       />
                       {img.view && (
                         <div style={{ position: 'absolute', bottom: 16, left: '50%', transform: 'translateX(-50%)', background: 'rgba(255,255,255,0.85)', backdropFilter: 'blur(8px)', padding: '6px 16px', borderRadius: 20, fontSize: 13, fontWeight: 600, color: '#333', textTransform: 'capitalize', boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }}>
-                          {img.view} view
+                          {ANGLE_LABELS[img.view] || img.view}
                         </div>
                       )}
                     </div>
@@ -523,14 +760,17 @@ export default function Verify() {
                 </button>
               </div>
               
-              {/* Dots Indicator */}
-              <div style={{ display: 'flex', justifyContent: 'center', gap: 8, marginTop: 16 }}>
-                {generatedMetadata.generated_image_url.map((_, i) => (
-                  <div 
+              {/* Angle indicator */}
+              <div style={{ display: 'flex', justifyContent: 'center', flexWrap: 'wrap', gap: 8, marginTop: 16 }}>
+                {generatedMetadata.generated_image_url.map((img, i) => (
+                  <button
+                    type="button"
                     key={i} 
                     onClick={() => setCurrentSlide(i)}
-                    style={{ width: i === currentSlide ? 24 : 8, height: 8, borderRadius: 4, background: i === currentSlide ? 'var(--accent)' : '#d0d0d0', transition: 'all 0.3s ease', cursor: 'pointer' }}
-                  />
+                    style={{ border: i === currentSlide ? '1px solid var(--accent)' : '1px solid var(--border)', borderRadius: 16, background: i === currentSlide ? 'var(--accent-lighter)' : '#fff', color: i === currentSlide ? 'var(--accent)' : 'var(--text-secondary)', padding: '5px 10px', fontSize: 11, fontWeight: 700, cursor: 'pointer' }}
+                  >
+                    {ANGLE_LABELS[img.view] || `View ${i + 1}`}
+                  </button>
                 ))}
               </div>
             </div>
@@ -550,8 +790,8 @@ export default function Verify() {
               Model Proportions & Claimed Metadata
             </div>
             <div style={{ fontSize: 13, color: '#0d47a1', display: 'flex', gap: 16 }}>
-              <div><strong>Size:</strong> {safeVal(confirmedAttrs?.size, 'M')}</div>
-              <div><strong>Height:</strong> {safeVal(confirmedAttrs?.modelHeight) || safeVal(confirmedAttrs?.model_apparent_height) || "5'6\""}</div>
+              <div><strong>Size:</strong> {safeVal(confirmedAttrs?.model_size) || safeVal(confirmedAttrs?.size, 'M')}</div>
+              <div><strong>Height:</strong> {safeVal(confirmedAttrs?.model_height) || safeVal(confirmedAttrs?.modelHeight) || safeVal(confirmedAttrs?.model_apparent_height) || "5'6\""}</div>
               <div><strong>Fitted for:</strong> {safeVal(confirmedAttrs?.garment_type, 'Crop Top')}</div>
             </div>
             <div style={{ fontSize: 11, color: '#1976d2', marginTop: 6 }}>
@@ -559,13 +799,14 @@ export default function Verify() {
             </div>
           </div>
 
-          <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 8, marginTop: 24, lineHeight: 1.4 }}>
-            {generatedMetadata.title}
+          <div style={{ marginTop: 24 }}>
+            <label className="form-label">Editable product title</label>
+            <input className="form-input" value={generatedMetadata.title || ''} onChange={event => updateGeneratedMetadata('title', event.target.value)} />
           </div>
 
-          {/* Description */}
-          <div style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 14, lineHeight: 1.6 }}>
-            {generatedMetadata.description}
+          <div style={{ marginTop: 12, marginBottom: 14 }}>
+            <label className="form-label">Editable product description</label>
+            <textarea className="form-input" rows={3} value={generatedMetadata.description || ''} onChange={event => updateGeneratedMetadata('description', event.target.value)} style={{ resize: 'vertical' }} />
           </div>
 
           {/* Key features */}
@@ -580,21 +821,7 @@ export default function Verify() {
             </div>
           )}
 
-          {/* Tags */}
-          {generatedMetadata.tags?.length > 0 && (
-            <div style={{ marginBottom: 14 }}>
-              <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6, display: 'flex', alignItems: 'center', gap: 4 }}>
-                <Tag size={12} /> Tags
-              </div>
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                {generatedMetadata.tags.map((t, i) => (
-                  <span key={i} style={{ background: 'var(--bg-highlight)', border: '1px solid var(--border)', borderRadius: 4, padding: '3px 8px', fontSize: 11, color: 'var(--text-secondary)' }}>
-                    {t}
-                  </span>
-                ))}
-              </div>
-            </div>
-          )}
+
 
           {/* Metadata grid */}
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, fontSize: 12 }}>
@@ -614,67 +841,184 @@ export default function Verify() {
               <div style={{ gridColumn: '1 / -1' }}><strong>Size & Fit:</strong> {generatedMetadata.size_fit_note}</div>
             )}
           </div>
+
+          <div style={{ marginTop: 14 }}>
+            <label className="form-label">Editable category path</label>
+            <input
+              className="form-input"
+              value={generatedMetadata.category_path || generatedMetadata.category || ''}
+              onChange={event => setGeneratedMetadata(prev => ({ ...prev, category: event.target.value, category_path: event.target.value }))}
+            />
+          </div>
+          <div style={{ marginTop: 14 }}>
+            <label className="form-label">Automated trend & garment tags</label>
+            <input
+              className="form-input"
+              value={(generatedMetadata.tags || []).join(', ')}
+              onChange={event => updateGeneratedMetadata('tags', event.target.value.split(',').map(tag => tag.trim()).filter(Boolean))}
+            />
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 7, marginTop: 9 }}>
+              {(generatedMetadata.tags || []).map((tag, index) => (
+                <span key={`${tag}-${index}`} style={{ background: 'linear-gradient(to right, #ff3f6c15, #f7706215)', border: '1px solid #ff3f6c30', color: '#ff3f6c', padding: '4px 10px', borderRadius: 16, fontSize: 12, fontWeight: 700 }}>
+                  #{tag.replace(/^#/, '')}
+                </span>
+              ))}
+            </div>
+          </div>
         </div>
       )}
 
-      {/* Enhanced Metadata (Trendy Tags) for Verify Mode */}
-      {enhancedMetadata && (
-        <div className="card" style={{ background: 'linear-gradient(135deg, #fffafb 0%, #fff 100%)', border: '1px solid #ff3f6c30' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
-            <Sparkles size={18} color="#ff3f6c" />
-            <h3 style={{ fontSize: 16, fontWeight: 700, margin: 0, color: '#282c3f' }}>AI Enhanced Metadata</h3>
-          </div>
-          
-          <div style={{ marginBottom: 16 }}>
-            <div style={{ fontSize: 13, fontWeight: 600, color: '#5F6477', marginBottom: 4 }}>Optimized Title</div>
-            <div style={{ fontSize: 15, fontWeight: 700, color: '#282c3f' }}>{enhancedMetadata.title || 'N/A'}</div>
-          </div>
-          
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16 }}>
-            {enhancedMetadata.category && (
-              <div>
-                <div style={{ fontSize: 12, fontWeight: 600, color: '#5F6477', marginBottom: 4 }}>Category</div>
-                <div style={{ display: 'inline-block', background: '#f5f5f6', padding: '4px 12px', borderRadius: 16, fontSize: 13, fontWeight: 600, color: '#282c3f' }}>
-                  {enhancedMetadata.category}
-                </div>
-              </div>
-            )}
-            
-            {enhancedMetadata.tags && enhancedMetadata.tags.length > 0 && (
-              <div style={{ flex: 1 }}>
-                <div style={{ fontSize: 12, fontWeight: 600, color: '#5F6477', marginBottom: 4 }}>Trendy Tags</div>
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-                  {enhancedMetadata.tags.map((tag, idx) => (
-                    <span key={idx} style={{ 
-                      background: 'linear-gradient(to right, #ff3f6c15, #f7706215)', 
-                      border: '1px solid #ff3f6c30', 
-                      color: '#ff3f6c', 
-                      padding: '4px 10px', 
-                      borderRadius: 16, 
-                      fontSize: 12, 
-                      fontWeight: 600 
-                    }}>
-                      #{tag}
-                    </span>
-                  ))}
-                </div>
-              </div>
-            )}
+      {generatedMetadata && (
+        <div className="card">
+          <div className="card-title">Extracted Metadata / Details</div>
+          <div className="card-desc" style={{ marginBottom: 16 }}>Review and edit the AI-detected clothing details before publishing.</div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))', gap: 12 }}>
+            {EDITABLE_ATTRIBUTES.map(([key, label]) => {
+              const fallbackKey = key === 'fabric_appearance' ? 'fabric_composition' : key
+              const rawValue = confirmedAttrs?.[key] ?? confirmedAttrs?.[fallbackKey] ?? anchorExtracted?.[key] ?? anchorExtracted?.[fallbackKey]
+              const rawConfidence = rawValue && typeof rawValue === 'object' ? Number(rawValue.confidence) : null
+              const confidence = Number.isFinite(rawConfidence) ? Math.round(rawConfidence <= 1 ? rawConfidence * 100 : rawConfidence) : null
+              return (
+                <label key={key} style={{ margin: 0 }}>
+                  <span className="form-label" style={{ display: 'flex', justifyContent: 'space-between', gap: 6 }}>
+                    {label}
+                    {confidence != null && <span style={{ color: 'var(--success)', fontSize: 10 }}>AI {confidence}%</span>}
+                  </span>
+                  <input className="form-input" value={safeVal(rawValue)} onChange={event => updateConfirmedAttribute(key, event.target.value)} />
+                </label>
+              )
+            })}
           </div>
         </div>
       )}
+
+      {generatedMetadata?.size_chart && (() => {
+        const chart = generatedMetadata.size_chart
+        const fit = chart.fit_analysis
+        return (
+          <div className="card">
+            <div className="card-title">Size Chart & Measurements</div>
+            <div className="card-desc" style={{ marginBottom: 16 }}>Exact values and fit analysis for the selected profile.</div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 16 }}>
+              <span className="badge badge-pass">Size {chart.selected_size || safeVal(confirmedAttrs?.model_size, 'M')}</span>
+              <span className="badge" style={{ background: '#e3f2fd', color: '#1565c0' }}>Height {chart.selected_height || safeVal(confirmedAttrs?.model_height, "5'4\"")}</span>
+              {chart.source && <span className="badge" style={{ background: 'var(--bg-tag)', color: 'var(--text-secondary)' }}>{chart.source}</span>}
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: sizeChart?.preview ? 'minmax(190px, 0.8fr) minmax(280px, 1.2fr)' : '1fr', gap: 18, alignItems: 'start' }}>
+              {sizeChart?.preview && <img src={sizeChart.preview} alt="Uploaded size chart" style={{ width: '100%', borderRadius: 10, border: '1px solid var(--border)' }} />}
+              <div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 10 }}>
+                  {(chart.measurements || []).map(item => (
+                    <div key={item.label} style={{ padding: 12, background: 'var(--bg-page)', border: '1px solid var(--border)', borderRadius: 8 }}>
+                      <div style={{ fontSize: 11, color: 'var(--text-tertiary)', textTransform: 'uppercase', fontWeight: 700 }}>{item.label}</div>
+                      <div style={{ fontSize: 17, fontWeight: 800, marginTop: 3 }}>{item.value}</div>
+                    </div>
+                  ))}
+                </div>
+                {fit && (
+                  <div style={{ marginTop: 12, padding: 13, background: '#e3f2fd', border: '1px solid #bbdefb', borderRadius: 8, color: '#0d47a1', fontSize: 12, lineHeight: 1.7 }}>
+                    <strong>Fit analysis:</strong> {fit.silhouette}; {fit.length}; {fit.stretch}. <strong>Recommendation:</strong> {fit.recommendation}.
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )
+      })()}
+
+      {generatedMetadata && (() => {
+        const verification = generatedMetadata.verification || {}
+        const confidence = Number(verification.confidence_score ?? v.overall_similarity ?? 0)
+        const anchorAccuracy = Number(verification.anchor_data_accuracy ?? v.anchor_data_accuracy ?? confidence)
+        return (
+          <div className="card" style={{ borderLeft: '4px solid var(--success)' }}>
+            <div className="card-title">Verification Status</div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 12, marginTop: 14 }}>
+              <div style={{ padding: 14, borderRadius: 9, background: 'var(--success-bg)' }}>
+                <div style={{ fontSize: 11, color: 'var(--text-secondary)', fontWeight: 700, textTransform: 'uppercase' }}>Match status</div>
+                <div style={{ color: 'var(--success)', fontWeight: 800, marginTop: 5 }}>{verification.match_status || 'Verified match'}</div>
+              </div>
+              <div style={{ padding: 14, borderRadius: 9, background: 'var(--bg-page)' }}>
+                <div style={{ fontSize: 11, color: 'var(--text-secondary)', fontWeight: 700, textTransform: 'uppercase' }}>AI confidence</div>
+                <div style={{ fontSize: 22, fontWeight: 800, marginTop: 2 }}>{confidence.toFixed(1)}%</div>
+              </div>
+              <div style={{ padding: 14, borderRadius: 9, background: 'var(--bg-page)' }}>
+                <div style={{ fontSize: 11, color: 'var(--text-secondary)', fontWeight: 700, textTransform: 'uppercase' }}>Anchor ↔ data accuracy</div>
+                <div style={{ fontSize: 22, fontWeight: 800, marginTop: 2 }}>{anchorAccuracy.toFixed(1)}%</div>
+              </div>
+            </div>
+            {v.fusionResult && (
+              <div style={{ marginTop: 14, padding: 14, background: '#fff8e1', border: '1px solid #ffe082', borderRadius: 9, color: '#6d4c00', fontSize: 12, lineHeight: 1.7 }}>
+                <strong>Bayesian formula score</strong><br />
+                P(Match | Evidence) = P(Evidence | Match) × P(Match) ÷ P(Evidence) = <strong>{Number(v.fusionResult.probability).toFixed(1)}%</strong><br />
+                Prior {(Number(v.fusionResult.breakdown?.prior || 0) * 100).toFixed(0)}% · CLIP LR {Number(v.fusionResult.breakdown?.lr_clip || 0).toFixed(2)} · pHash LR {Number(v.fusionResult.breakdown?.lr_phash || 0).toFixed(2)} · Attribute LR {Number(v.fusionResult.breakdown?.lr_attributes || 0).toFixed(2)}
+              </div>
+            )}
+          </div>
+        )
+      })()}
 
       {/* Catalog image strip (verify mode only) */}
       {catalogPreviews.length > 0 && (
         <div className="card">
-          <div className="card-title">Catalog images under verification</div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 12 }}>
+            <div className="card-title" style={{ marginBottom: 0 }}>Catalog evidence under verification</div>
+            <span className={`badge ${catalogEvidenceDiagnostics.every(item => item.status === 'ready') ? 'badge-pass' : 'badge-warn'}`}>
+              {catalogEvidenceDiagnostics.filter(item => item.status === 'ready').length || catalogPreviews.length}/5 loaded
+            </span>
+          </div>
           <div className="catalog-grid">
             {catalogPreviews.map((p, i) => (
               <div key={i} className={`catalog-thumb ${selectedCat === i ? 'selected' : ''}`} onClick={() => setSelectedCat(i)}>
-                <img src={p} alt={`Catalog ${i + 1}`} />
-                <div className="catalog-thumb-label">Image {i + 1}</div>
+                <CatalogPreviewImage src={p} alt={`${CATALOG_VIEW_LABELS[i] || `Image ${i + 1}`} catalog view`} />
+                <div className="catalog-thumb-label">{CATALOG_VIEW_LABELS[i] || `Image ${i + 1}`}</div>
               </div>
             ))}
+          </div>
+          {catalogEvidenceDiagnostics.some(item => item.status !== 'ready') && (
+            <div style={{ marginTop: 12, color: 'var(--danger)', fontSize: 12 }}>
+              {catalogEvidenceDiagnostics.filter(item => item.status !== 'ready').map((item, index) => (
+                <div key={index}>Image {index + 1}: {item.error || 'could not be loaded for verification'}</div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {sizeChartEvidence && Object.keys(sizeChartEvidence).length > 0 && (
+        <div className="card">
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', marginBottom: 14 }}>
+            <div>
+              <div className="card-title" style={{ marginBottom: 3 }}>Seller size chart & fit evidence</div>
+              <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+                Model: {safeVal(confirmedAttrs?.model_size, 'Not provided')} · {safeVal(confirmedAttrs?.model_height, 'Height not provided')} · {safeVal(confirmedAttrs?.model_build, 'Build not provided')}
+              </div>
+            </div>
+            <span className="badge badge-pass">Used in verification</span>
+          </div>
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+              <thead>
+                <tr style={{ background: 'var(--bg-page)', textAlign: 'left' }}>
+                  <th style={{ padding: 10 }}>Size</th>
+                  <th style={{ padding: 10 }}>Chest</th>
+                  <th style={{ padding: 10 }}>Garment length</th>
+                  <th style={{ padding: 10 }}>Fit read</th>
+                </tr>
+              </thead>
+              <tbody>
+                {Object.entries(sizeChartEvidence).map(([size, values]) => (
+                  <tr key={size} style={{ borderTop: '1px solid var(--border)' }}>
+                    <td style={{ padding: 10, fontWeight: 800 }}>{size}</td>
+                    <td style={{ padding: 10 }}>{values.chest ?? '—'}{values.chest != null ? ' in' : ''}</td>
+                    <td style={{ padding: 10 }}>{values.length ?? '—'}{values.length != null ? ' in' : ''}</td>
+                    <td style={{ padding: 10, color: size === safeVal(confirmedAttrs?.model_size) ? 'var(--success)' : 'var(--text-secondary)' }}>
+                      {size === safeVal(confirmedAttrs?.model_size) ? 'Selected model size' : 'Seller supplied'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         </div>
       )}
@@ -702,7 +1046,7 @@ export default function Verify() {
             )
           ) : (
             catalogPreviews[selectedCat] ? (
-              <img src={catalogPreviews[selectedCat]} alt="Catalog" style={{ aspectRatio: '3/4', objectFit: 'cover', maxHeight: 360 }} />
+              <CatalogPreviewImage src={catalogPreviews[selectedCat]} alt="Catalog" style={{ aspectRatio: '3/4', objectFit: 'contain', maxHeight: 360, width: '100%' }} />
             ) : (
               <div className="img-placeholder">No catalog image</div>
             )
@@ -762,7 +1106,7 @@ export default function Verify() {
       )}
 
       {/* Attribute comparison table */}
-      <div className="card">
+      <div id="verification-findings" className="card">
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
           <div className="card-title" style={{ fontSize: 14, marginBottom: 0 }}>
             Attribute comparison ({rows.length} attributes checked)
@@ -904,9 +1248,11 @@ export default function Verify() {
             <div style={{ fontSize: 12, padding: '4px 8px', background: 'var(--bg-highlight)', borderRadius: 4, border: '1px solid var(--border)' }}>
               <strong>Hamming Distance:</strong> {phashResult.phash_distance}
             </div>
-            <div style={{ fontSize: 12, padding: '4px 8px', background: 'var(--bg-highlight)', borderRadius: 4, border: '1px solid var(--border)' }}>
-              <strong>Similarity:</strong> {(phashResult.similarity_score * 100).toFixed(1)}%
-            </div>
+            {phashResult.similarity_score != null && (
+              <div style={{ fontSize: 12, padding: '4px 8px', background: 'var(--bg-highlight)', borderRadius: 4, border: '1px solid var(--border)' }}>
+                <strong>Similarity:</strong> {(phashResult.similarity_score * 100).toFixed(1)}%
+              </div>
+            )}
           </div>
           {phashResult.is_match ? (
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: 'var(--success)' }}>
@@ -924,54 +1270,75 @@ export default function Verify() {
 
       {/* Action bar */}
       <div className="action-bar mt-20" style={{ marginBottom: 20 }}>
-        {(() => {
-          const scoreTooLow = (v.overall_similarity !== undefined && v.overall_similarity < 60);
-          const isPublishBlocked = skipCount > 10 || scoreTooLow || failCount > 10 || v.status === 'UNVERIFIED';
-
-          return (
-            <>
-              <div style={{ fontSize: 13, color: isPublishBlocked ? 'var(--danger)' : v.status === 'PASS' ? 'var(--success)' : 'var(--warning)' }}>
-                {skipCount > 10 ? "Too many missing attributes. Please fill them to publish." :
-                 scoreTooLow ? `Overall similarity is too low (${v.overall_similarity}%). Must be at least 60%.` :
-                 failCount > 5 ? `${failCount} issue${failCount > 1 ? 's' : ''} must be resolved before publishing.` :
-                 v.status === 'PASS' ? `All checks passed.` :
-                 `${failCount > 0 ? failCount + ' issues, ' : ''}${warnCount} warning${warnCount > 1 ? 's' : ''}, ${skipCount > 0 ? skipCount + ' missing' : ''} — publishing is allowed.`}
-              </div>
-              <div className="action-btns">
-                <button className="btn btn-outline btn-sm" onClick={() => nav('/new-listing')}>
-                  Replace images
-                </button>
-                {isPublishBlocked ? (
-                  <button className="btn btn-primary btn-sm" disabled>Publish (blocked)</button>
-                ) : (
-                  <button className="btn btn-primary btn-sm" onClick={handlePublish}>
-                    Publish listing <ArrowRight size={14} />
-                  </button>
-                )}
-              </div>
-            </>
-          );
-        })()}
+        <>
+          <div className={publishGate.blocked ? 'publish-readiness is-blocked' : 'publish-readiness'}>
+            <strong>{publishGate.blocked ? 'Not ready to publish' : 'Ready to publish'}</strong>
+            <span>
+              {publishGate.blocked
+                ? publishGate.message
+                : v.status === 'PASS'
+                  ? 'All critical checks passed.'
+                  : `${warnCount} warning${warnCount === 1 ? '' : 's'} will remain attached to the evidence trail.`}
+            </span>
+          </div>
+          <div className="action-btns">
+            {publishGate.blocked && (
+              <button
+                className="btn btn-outline btn-sm"
+                onClick={() => {
+                  const targetId = corrections?.length ? 'ai-correction-copilot' : 'verification-findings'
+                  document.getElementById(targetId)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+                }}
+              >
+                Review metadata fixes
+              </button>
+            )}
+            <button className="btn btn-outline btn-sm" onClick={() => nav('/new-listing')}>
+              Replace catalog images
+            </button>
+            <button
+              className="btn btn-primary btn-sm"
+              onClick={handlePublish}
+              disabled={publishGate.blocked}
+              title={publishGate.blocked ? publishGate.message : undefined}
+            >
+              {publishGate.blocked ? 'Publish blocked' : <>Publish to Catalog <ArrowRight size={14} /></>}
+            </button>
+          </div>
+        </>
       </div>
 
-      {ignoreConfirm && (
-        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}>
-          <div className="card" style={{ maxWidth: 400, margin: 20, background: '#fff' }}>
-            <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 12 }}>Confirm original value</div>
-            <div style={{ fontSize: 14, color: 'var(--text-secondary)', marginBottom: 20 }}>
-              Are you sure <strong>{ignoreConfirm.field.replace('_', ' ')}</strong> is <strong>{ignoreConfirm.current_value}</strong>? Our AI detected <strong>{ignoreConfirm.suggested_value}</strong> with {ignoreConfirm.confidence || 'high'} confidence.
+      {ignoreConfirm && typeof document !== 'undefined' && createPortal(
+        <div className="verify-modal-backdrop" onMouseDown={() => setIgnoreConfirm(null)}>
+          <div
+            className="verify-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="ignore-confirm-title"
+            onMouseDown={event => event.stopPropagation()}
+          >
+            <div className="verify-modal-icon"><AlertTriangle size={20} /></div>
+            <div id="ignore-confirm-title" className="verify-modal-title">Keep your original value?</div>
+            <p>
+              You entered <strong>{ignoreConfirm.current_value}</strong> for{' '}
+              <strong>{ignoreConfirm.field.replace(/_/g, ' ')}</strong>. The visual check detected{' '}
+              <strong>{ignoreConfirm.suggested_value}</strong> with {String(ignoreConfirm.confidence || 'high').toLowerCase()} confidence.
+            </p>
+            <div className="verify-modal-note">
+              Ignoring dismisses this suggestion, but any unresolved critical evidence can still block publishing.
             </div>
-            <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+            <div className="verify-modal-actions">
               <button className="btn btn-outline" onClick={() => setIgnoreConfirm(null)}>Cancel</button>
               <button className="btn btn-primary" onClick={() => {
-                setAcceptedCorrections(prev => ({...prev, [ignoreConfirm.field]: 'IGNORED'}));
-                setIgnoreConfirm(null);
-              }}>Yes, keep mine</button>
+                setAcceptedCorrections(prev => ({ ...prev, [ignoreConfirm.field]: 'IGNORED' }))
+                setIgnoreConfirm(null)
+              }}>Keep my value</button>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
 
-    </div>
+    </main>
   )
 }

@@ -30,6 +30,7 @@ export function AppProvider({ children }) {
   // CSV State
   const [csvSessionId, setCsvSessionId] = useState(null)
   const [csvRowIndex, setCsvRowIndex] = useState(null)
+  const [sellerListing, setSellerListing] = useState(null)
 
   // Loading states
   const [extracting, setExtracting] = useState(false)
@@ -46,6 +47,7 @@ export function AppProvider({ children }) {
     setError(null)
     // We intentionally DO NOT reset csvSessionId so the user can continue verifying other rows.
     setCsvRowIndex(null)
+    setSellerListing(null)
   }
 
   // Helper: all anchor previews as array (for Gemini)
@@ -117,6 +119,7 @@ export function AppProvider({ children }) {
       modelIssues, setModelIssues,
       csvSessionId, setCsvSessionId,
       csvRowIndex, setCsvRowIndex,
+      sellerListing, setSellerListing,
       extracting, setExtracting,
       verifying, setVerifying,
       error, setError,

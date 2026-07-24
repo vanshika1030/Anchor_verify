@@ -1,6 +1,6 @@
 import express from 'express'
 import jwt from 'jsonwebtoken'
-import { getProducts, getProductById, createProduct, getAllProducts } from '../services/database.js'
+import { getProducts, getProductById, createProduct, getAllProducts, deleteProduct } from '../services/database.js'
 import { getDemoProduct } from '../demo_registry.js'
 
 const router = express.Router()
@@ -72,6 +72,21 @@ router.post('/', optionalAuth, (req, res) => {
       ...req.body
     })
     res.json(product)
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// DELETE /api/products/:id — remove a seller-owned listing everywhere.
+// Citizen pages read from this same products table, so deletion is immediate
+// for both the seller dashboard and the public catalog.
+router.delete('/:id', requireAuth, (req, res) => {
+  try {
+    const deleted = deleteProduct(req.params.id, req.seller.id)
+    if (!deleted) {
+      return res.status(404).json({ error: 'Listing not found or you do not have permission to delete it' })
+    }
+    res.json({ success: true, deleted })
   } catch (err) {
     res.status(500).json({ error: err.message })
   }

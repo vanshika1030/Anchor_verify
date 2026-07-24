@@ -20,6 +20,66 @@ const csvUpload = multer({ dest: csvUploadDir, limits: { fileSize: 10 * 1024 * 1
 
 // In-memory store (production: Redis/DB)
 const csvStore = new Map()
+const CATALOG_IMAGE_KEYS = [
+  'catalogImage_front',
+  'catalogImage_back',
+  'catalogImage_side',
+  'catalogImage_closeup',
+  'catalogImage_full',
+]
+
+const imageExtension = contentType => {
+  if (contentType.includes('png')) return '.png'
+  if (contentType.includes('webp')) return '.webp'
+  return '.jpg'
+}
+
+async function materializeCatalogImage(url, sessionId, rowIndex, key) {
+  const view = key.replace('catalogImage_', '')
+  const controller = new AbortController()
+  const timeoutId = setTimeout(() => controller.abort(), 15000)
+
+  try {
+    const response = await fetch(url, {
+      redirect: 'follow',
+      signal: controller.signal,
+      headers: { 'User-Agent': 'Anchor-Catalog-Importer/1.0' },
+    })
+    if (!response.ok) throw new Error(`HTTP ${response.status}`)
+
+    const contentType = response.headers.get('content-type') || ''
+    if (!contentType.toLowerCase().startsWith('image/')) {
+      throw new Error(`Expected an image but received ${contentType || 'unknown content type'}`)
+    }
+
+    const buffer = Buffer.from(await response.arrayBuffer())
+    if (buffer.length === 0) throw new Error('Downloaded image is empty')
+    if (buffer.length > 15 * 1024 * 1024) throw new Error('Image exceeds the 15 MB limit')
+
+    const filename = `csv_${sessionId}_row${rowIndex}_${view}${imageExtension(contentType)}`
+    fs.writeFileSync(path.join(uploadsDir, filename), buffer)
+
+    return {
+      key,
+      view,
+      sourceUrl: url,
+      resolvedUrl: `http://localhost:3001/uploads/${filename}`,
+      status: 'ready',
+      bytes: buffer.length,
+    }
+  } catch (error) {
+    return {
+      key,
+      view,
+      sourceUrl: url,
+      resolvedUrl: url,
+      status: 'source-only',
+      error: error.message,
+    }
+  } finally {
+    clearTimeout(timeoutId)
+  }
+}
 
 const CATEGORIES = {
   Topwear: {
@@ -178,45 +238,33 @@ router.post('/upload', csvUpload.single('file'), async (req, res) => {
     }
 
     const sessionId = req.body.sessionId || Date.now().toString()
+    const originalRecords = JSON.parse(JSON.stringify(records))
 
-    // Download images for each record if they start with catalogImage_
-    for (let i = 0; i < records.length; i++) {
-      const row = records[i];
-      for (const key of Object.keys(row)) {
-        if (key.startsWith('catalogImage_') && row[key]) {
-          const url = row[key];
-          if (url.startsWith('http://') || url.startsWith('https://')) {
-            const view = key.replace('catalogImage_', '');
-            const filename = `csv_${sessionId}_row${i}_${view}.jpg`;
-            const localPath = path.join(uploadsDir, filename);
-            
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 10000);
-            try {
-              const response = await fetch(url, { signal: controller.signal });
-              if (response.ok) {
-                const arrayBuffer = await response.arrayBuffer();
-                const buffer = Buffer.from(arrayBuffer);
-                fs.writeFileSync(localPath, buffer);
-                row[key] = `http://localhost:3001/uploads/${filename}`; // Full URL for frontend
-              } else {
-                console.warn(`Failed to download ${url}: ${response.statusText}`);
-              }
-            } catch (e) {
-              console.warn(`Failed to download ${url}: ${e.message}`);
-            } finally {
-              clearTimeout(timeoutId);
-            }
-          }
+    // Resolve all catalog links in parallel so a five-angle row does not wait
+    // for five sequential network timeouts. The original seller URLs are kept
+    // untouched alongside the locally materialized working copy.
+    const imageJobs = []
+    records.forEach((row, rowIndex) => {
+      CATALOG_IMAGE_KEYS.forEach(key => {
+        const url = row[key]
+        if (/^https?:\/\//i.test(url || '')) {
+          imageJobs.push(
+            materializeCatalogImage(url, sessionId, rowIndex, key).then(result => {
+              row[key] = result.resolvedUrl
+              return { rowIndex, ...result }
+            })
+          )
         }
-      }
-    }
+      })
+    })
+    const imageDiagnostics = await Promise.all(imageJobs)
 
     csvStore.set(sessionId, {
-      original: JSON.parse(JSON.stringify(records)),
+      original: originalRecords,
       current: JSON.parse(JSON.stringify(records)),
       generated: null,
       published: null,
+      imageDiagnostics,
       uploadedAt: new Date().toISOString(),
       filename: req.file.originalname,
     })
@@ -229,6 +277,8 @@ router.post('/upload', csvUpload.single('file'), async (req, res) => {
       rowCount: records.length,
       columns: Object.keys(records[0] || {}),
       preview: records.slice(0, 10),
+      sourcePreview: originalRecords.slice(0, 10),
+      imageDiagnostics,
     })
   } catch (err) {
     console.error('CSV upload failed:', err.message)
@@ -247,6 +297,7 @@ router.get('/:sessionId', (req, res) => {
     current: data.current,
     generated: data.generated,
     published: data.published,
+    imageDiagnostics: data.imageDiagnostics || [],
   })
 })
 

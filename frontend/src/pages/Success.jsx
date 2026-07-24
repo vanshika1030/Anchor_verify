@@ -1,87 +1,93 @@
-import { useNavigate } from 'react-router-dom'
-import { CheckCircle, ArrowRight, Clock, Hash, Shield, BarChart3 } from 'lucide-react'
+import { useMemo } from 'react'
+import { useLocation, useNavigate } from 'react-router-dom'
+import {
+  ArrowRight, BarChart3, CheckCircle2, Clock3, Hash, LayoutDashboard, Plus, ShieldCheck, Sparkles,
+} from 'lucide-react'
 import ExcelView from '../components/ExcelView'
-
 import { useApp } from '../AppContext'
 
 export default function Success() {
   const nav = useNavigate()
+  const location = useLocation()
   const { csvSessionId, verdict } = useApp()
+  const publishedProductId = location.state?.productId
+  const styleId = useMemo(
+    () => `MYN-ANC-${Date.now().toString(36).toUpperCase().slice(-5)}`,
+    [],
+  )
+  const confidence = verdict?.overall_similarity
+    ? Math.round(verdict.overall_similarity)
+    : 94
 
   return (
-    <div style={{ maxWidth: 640, margin: '0 auto' }}>
-      {/* Celebration */}
-      <div className="card" style={{ textAlign: 'center', padding: '44px 32px 36px' }}>
-        <div style={{
-          width: 72, height: 72, borderRadius: '50%',
-          background: 'var(--success-bg)', border: '2px solid var(--success)',
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          margin: '0 auto 18px',
-        }}>
-          <CheckCircle size={32} color="var(--success)" />
-        </div>
+    <main className="success-page page-shell">
+      <section className="success-hero">
+        <div className="success-confetti success-confetti-one" aria-hidden="true" />
+        <div className="success-confetti success-confetti-two" aria-hidden="true" />
 
-        <h2 style={{ fontSize: 22, fontWeight: 700, letterSpacing: '-0.02em', marginBottom: 6 }}>
-          Listing published
-        </h2>
-        <p style={{ color: 'var(--text-secondary)', fontSize: 14, marginBottom: 24, lineHeight: 1.7 }}>
-          Your listing has been verified by Anchor and submitted to Myntra QC.
-          It will go live once approved by the catalog team.
+        <div className="success-seal">
+          <CheckCircle2 size={31} />
+        </div>
+        <div className="section-kicker"><Sparkles size={12} /> Catalog milestone</div>
+        <h1 className="success-headline">Your listing is beautifully ready.</h1>
+        <p className="success-subtitle">
+          Anchor has verified the evidence and sent your product to Myntra quality review.
+          You can keep working while the catalog team completes its check.
         </p>
 
-        {/* Summary grid */}
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, textAlign: 'left', marginBottom: 24 }}>
-          <div style={{ padding: '12px 16px', background: 'var(--bg-page)', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 4 }}>
-              <Shield size={12} /> Verification
-            </div>
-            <span className="badge badge-pass" style={{ fontSize: 12, padding: '3px 10px' }}>Verified</span>
+        <div className="success-status-strip" aria-label="Publication summary">
+          <div className="success-stat">
+            <span className="success-stat-icon success-stat-icon--green"><ShieldCheck size={17} /></span>
+            <div><small>Verification</small><strong>Verified</strong></div>
           </div>
-          <div style={{ padding: '12px 16px', background: 'var(--bg-page)', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 4 }}>
-              <Clock size={12} /> QC Status
-            </div>
-            <span className="badge badge-warn" style={{ fontSize: 12, padding: '3px 10px' }}>Pending review</span>
+          <div className="success-stat">
+            <span className="success-stat-icon success-stat-icon--amber"><Clock3 size={17} /></span>
+            <div><small>QC status</small><strong>Pending review</strong></div>
           </div>
-          <div style={{ padding: '12px 16px', background: 'var(--bg-page)', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 4 }}>
-              <BarChart3 size={12} /> Confidence
-            </div>
-            <div style={{ fontSize: 20, fontWeight: 700, color: 'var(--success)' }}>
-              {verdict?.overall_similarity ? Math.round(verdict.overall_similarity) : 94}%
-            </div>
+          <div className="success-stat">
+            <span className="success-stat-icon success-stat-icon--rose"><BarChart3 size={17} /></span>
+            <div><small>Confidence</small><strong>{confidence}%</strong></div>
           </div>
-          <div style={{ padding: '12px 16px', background: 'var(--bg-page)', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 4 }}>
-              <Hash size={12} /> Style ID
-            </div>
-            <div style={{ fontSize: 14, fontWeight: 600 }}>MYN-ANC-{Date.now().toString(36).toUpperCase().slice(-5)}</div>
+          <div className="success-stat">
+            <span className="success-stat-icon"><Hash size={17} /></span>
+            <div><small>Style ID</small><strong>{styleId}</strong></div>
           </div>
         </div>
 
-        <div style={{ display: 'flex', gap: 10, justifyContent: 'center', fontSize: 12, color: 'var(--text-tertiary)', marginBottom: 24 }}>
+        <div className="success-details">
           <span>Status: {verdict?.status || 'Verified'}</span>
-          <span>|</span>
+          <span aria-hidden="true">•</span>
           <span>Matches: {verdict?.summary?.matches ?? '—'}/{verdict?.summary?.total ?? '—'}</span>
-          <span>|</span>
-          <span>Verified: Just now</span>
+          <span aria-hidden="true">•</span>
+          <span>Verified just now</span>
         </div>
 
-        <div style={{ display: 'flex', justifyContent: 'center', gap: 12 }}>
-          <button className="btn btn-primary" onClick={() => nav('/myntra')} style={{ background: '#ff3f6c', borderColor: '#ff3f6c' }}>
-            View on Myntra <ArrowRight size={14} />
+        <div className="success-actions">
+          <button
+            className="btn btn-primary"
+            onClick={() => nav(publishedProductId ? `/product/${publishedProductId}` : '/myntra')}
+          >
+            View shopper page <ArrowRight size={15} />
           </button>
           <button className="btn btn-outline" onClick={() => nav('/new-listing')}>
-            Create another listing
+            <Plus size={15} /> Create another
           </button>
-          <button className="btn btn-outline" onClick={() => nav('/')}>
-            Back to dashboard
+          <button className="btn btn-ghost" onClick={() => nav('/dashboard')}>
+            <LayoutDashboard size={15} /> Dashboard
           </button>
         </div>
-      </div>
+      </section>
 
-      {/* Excel view showing published state */}
-      <ExcelView />
-    </div>
+      <section className="success-sheet">
+        <div className="success-sheet-heading">
+          <div>
+            <div className="section-kicker">Publication record</div>
+            <h2>Updated product sheet</h2>
+          </div>
+          <span>{csvSessionId ? 'Ready to download' : 'Optional'}</span>
+        </div>
+        <ExcelView />
+      </section>
+    </main>
   )
 }

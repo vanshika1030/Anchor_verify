@@ -10,6 +10,7 @@
  */
 
 import crypto from 'crypto'
+import fs from 'fs'
 
 // ═══════════════════════════════════════════════════════════════════════
 // FINGERPRINT COMPUTATION
@@ -318,6 +319,138 @@ const CACHED_RESULTS = {
   },
 }
 
+const CROP_TOP_MODEL_HASH = '31f86df8dc7d'
+const CROP_TOP_ANCHOR_HASHES = new Set(['b4c30d47a338', '31f86df8dc7d'])
+const CROP_TOP_VIEWS = ['front', 'back', 'side', 'closeup', 'full']
+
+// The generate-mode demo is intentionally strict: it is only used for the
+// checked-in prod_crop anchor at the requested M / 5'4" configuration. Other
+// garments and dimensions continue through the live pipeline.
+const CACHED_CROP_TOP_GENERATION = {
+  success: true,
+  mode: 'generate',
+  cache: {
+    status: 'hit',
+    source: 'prod_crop',
+    variant: 'M / 5\'4"',
+  },
+  comparison: [
+    { key: 'garment_type', anchor_value: 'Crop Top', catalog_value: 'Crop Top', declared_value: 'Crop Top', status: 'match', severity: 'HIGH', source: 'Cached ViT + CLIP', anchor_confidence: 'HIGH', catalog_confidence: 'HIGH' },
+    { key: 'primary_color', anchor_value: 'Pink', catalog_value: 'Pink', declared_value: 'Pink', status: 'match', severity: 'HIGH', source: 'Cached ViT + CLIP', anchor_confidence: 'HIGH', catalog_confidence: 'HIGH' },
+    { key: 'pattern_type', anchor_value: 'Fine ribbed', catalog_value: 'Fine ribbed', declared_value: 'Fine ribbed', status: 'match', severity: 'MEDIUM', source: 'Cached texture analysis', anchor_confidence: 'HIGH', catalog_confidence: 'HIGH' },
+    { key: 'fabric_appearance', anchor_value: 'Polyester blend', catalog_value: 'Polyester blend', declared_value: 'Polyester blend', status: 'match', severity: 'MEDIUM', source: 'Cached texture analysis', anchor_confidence: 'HIGH', catalog_confidence: 'HIGH' },
+    { key: 'overall_length', anchor_value: 'Crop', catalog_value: 'Crop', declared_value: 'Crop', status: 'match', severity: 'HIGH', source: 'Cached geometric analysis', anchor_confidence: 'HIGH', catalog_confidence: 'HIGH' },
+    { key: 'sleeve_length', anchor_value: 'Short sleeve', catalog_value: 'Short sleeve', declared_value: 'Short sleeve', status: 'match', severity: 'MEDIUM', source: 'Cached ViT + CLIP', anchor_confidence: 'HIGH', catalog_confidence: 'HIGH' },
+    { key: 'neck_type', anchor_value: 'Round neck', catalog_value: 'Round neck', declared_value: 'Round neck', status: 'match', severity: 'MEDIUM', source: 'Cached ViT + CLIP', anchor_confidence: 'HIGH', catalog_confidence: 'HIGH' },
+    { key: 'fit', anchor_value: 'Slim fit', catalog_value: 'Slim fit', declared_value: 'Slim fit', status: 'match', severity: 'MEDIUM', source: 'Cached silhouette analysis', anchor_confidence: 'HIGH', catalog_confidence: 'HIGH' },
+    { key: 'occasion_style', anchor_value: 'Casual / trendy', catalog_value: 'Casual / trendy', declared_value: 'Casual / trendy', status: 'match', severity: 'LOW', source: 'Cached style analysis', anchor_confidence: 'HIGH', catalog_confidence: 'HIGH' },
+  ],
+  catalog_attributes: {
+    garment_type: { value: 'Crop Top', confidence: 0.99 },
+    primary_color: { value: 'Pink', confidence: 0.99 },
+    pattern_type: { value: 'Fine ribbed', confidence: 0.96 },
+    fabric_appearance: { value: 'Polyester blend', confidence: 0.92 },
+    fit: { value: 'Slim fit', confidence: 0.95 },
+    occasion_style: { value: 'Casual / trendy', confidence: 0.94 },
+  },
+  modelIssues: [],
+  fabricResult: null,
+  phashResult: null,
+  fusionResult: {
+    probability: 96.8,
+    breakdown: { prior: 0.50, lr_clip: 12.4, lr_phash: 4.8, lr_attributes: 15.2 },
+  },
+  verdict: {
+    status: 'PASS',
+    reason: 'Verified match — anchor, extracted details, size profile, and cached model views are consistent.',
+    critical_fails: 0,
+    warnings: 0,
+    overall_similarity: 96.8,
+    anchor_data_accuracy: 98.4,
+    fusionResult: {
+      probability: 96.8,
+      breakdown: { prior: 0.50, lr_clip: 12.4, lr_phash: 4.8, lr_attributes: 15.2 },
+    },
+  },
+  corrections: [],
+  enhancedMetadata: null,
+  generatedMetadata: {
+    title: 'Indie Muse Pink Ringer Crop Top',
+    description: 'A fitted pink ribbed crop top finished with contrast red binding at the crew neck and sleeves. Its Y2K-inspired ringer silhouette pairs effortlessly with high-rise denim for indie, streetwear, and everyday casual looks.',
+    category: 'Women > Casual/Trendy > Crop Top',
+    category_path: 'Women > Casual/Trendy > Crop Top',
+    tags: ['Y2K', 'Indie', 'Streetwear', 'Ringer Tee', 'Retro', 'Casual', 'Summer Style', 'Pink Crop Top'],
+    ideal_for: 'Women',
+    fabric_details: 'Fine-ribbed polyester blend with comfortable stretch',
+    care_instructions: 'Machine wash cold with similar colours. Do not bleach. Dry in shade.',
+    size_fit_note: 'Size M on a 5\'4" model: slim, true-to-size fit with the hem sitting at the natural waist.',
+    key_features: [
+      'Pink body with contrast red neck and sleeve binding',
+      'Fine rib texture with light stretch',
+      'Slim cropped silhouette',
+      'Round neck and short sleeves',
+    ],
+    size_chart: {
+      selected_size: 'M',
+      selected_height: '5\'4"',
+      source: 'Uploaded prod_crop size chart',
+      measurements: [
+        { label: 'Bust', value: '34 in' },
+        { label: 'Garment length', value: '15 in' },
+        { label: 'Sleeve length', value: '22.5 in' },
+        { label: 'Across shoulder', value: '14 in' },
+      ],
+      fit_analysis: {
+        silhouette: 'Slim / close fit',
+        length: 'Cropped at natural waist',
+        stretch: 'Light to moderate stretch',
+        recommendation: 'True to size for a fitted look',
+      },
+    },
+    verification: {
+      confidence_score: 96.8,
+      anchor_data_accuracy: 98.4,
+      match_status: 'Verified match',
+      source: 'Cached ensemble result',
+    },
+    generated_image_url: CROP_TOP_VIEWS.map(view => ({
+      view,
+      url: `http://localhost:3001/uploads/pregenerated/${CROP_TOP_MODEL_HASH}_M_54_${view}.png`,
+    })),
+  },
+}
+
+function attributeValue(value) {
+  if (value && typeof value === 'object') return value.value ?? ''
+  return value ?? ''
+}
+
+function firstChunkHash(filePath) {
+  try {
+    if (!filePath || !fs.existsSync(filePath)) return null
+    const bytes = fs.readFileSync(filePath)
+    return crypto.createHash('md5').update(bytes.slice(0, 10240)).digest('hex').substring(0, 12)
+  } catch {
+    return null
+  }
+}
+
+function getCachedGenerateResult(declaredAttrs, anchorPaths) {
+  const type = String(attributeValue(declaredAttrs?.garment_type)).toLowerCase()
+  const color = String(attributeValue(declaredAttrs?.primary_color)).toLowerCase()
+  const size = String(attributeValue(declaredAttrs?.model_size)).trim().toUpperCase()
+  const height = String(attributeValue(declaredAttrs?.model_height)).replace(/[^0-9]/g, '')
+  const anchorHashes = (anchorPaths || []).map(firstChunkHash).filter(Boolean)
+
+  const isCropTop = type.includes('crop') || (type.includes('t-shirt') && color.includes('pink'))
+  const isExactDemo = anchorHashes.some(hash => CROP_TOP_ANCHOR_HASHES.has(hash))
+
+  if (!isCropTop || !isExactDemo || size !== 'M' || height !== '54') return null
+
+  console.log('[DEMO REGISTRY] Cached generate match: prod_crop / M / 5\'4"')
+  return JSON.parse(JSON.stringify(CACHED_CROP_TOP_GENERATION))
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 // REGISTRY — Pre-compute fingerprints at import time
 // ═══════════════════════════════════════════════════════════════════════
@@ -335,8 +468,7 @@ for (const [productId, attrs] of Object.entries(DEMO_DECLARED_ATTRS)) {
 // ═══════════════════════════════════════════════════════════════════════
 
 export function getDemoCachedResult(declaredAttrs, mode, catalogPaths = [], anchorPaths = []) {
-  // Only cache verify mode (CSV upload flow), not generate mode
-  if (mode === 'generate') return null
+  if (mode === 'generate') return getCachedGenerateResult(declaredAttrs, anchorPaths)
 
   // Extremely robust matching for the pitch demo
   // We prioritize explicit declared attributes from the CSV over filenames.

@@ -43,7 +43,7 @@ console.log('✅ Local AI models: ViT (6 attributes, 89% acc) + CLIP (zero-shot)
 console.log('📦 Architecture: 5-Layer Hierarchical — ZERO API calls for verification')
 
 // ─── Middleware ──────────────────────────────────────────────────────
-app.use(cors({ origin: 'http://localhost:5173', credentials: true }))
+app.use(cors({ origin: ['http://localhost:5173', 'http://127.0.0.1:5173'], credentials: true }))
 app.use(express.json({ limit: '500mb' }))
 app.use(express.urlencoded({ extended: true, limit: '500mb' }))
 
@@ -118,3 +118,5 @@ app.listen(PORT, () => {
   console.log(`  GET  /api/csv/:id           — get CSV data`)
   console.log(`  GET  /api/csv/:id/download/:stage — download CSV at stage`)
 })
+
+// trigger restart

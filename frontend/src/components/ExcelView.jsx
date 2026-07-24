@@ -1,8 +1,8 @@
 import { useState, useRef, useEffect } from 'react'
-import { Upload, Download, FileSpreadsheet, Eye, ArrowRight, ChevronLeft, ChevronRight, Play } from 'lucide-react'
+import { Upload, Download, FileSpreadsheet, ChevronLeft, ChevronRight, Play, Loader2 } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { useApp } from '../AppContext'
-import { uploadCSV, getCSVData, getTemplateURL, getDownloadURL } from '../services/api'
+import { uploadCSV, getCSVData, downloadTemplate, downloadCSVStage } from '../services/api'
 
 const STAGE_TABS = [
   { key: 'original', label: 'Current Sheet', color: 'var(--text-primary)' },
@@ -28,6 +28,7 @@ export default function ExcelView() {
   const [error, setError] = useState(null)
   const [activeTab, setActiveTab] = useState('original')
   const [scrollPos, setScrollPos] = useState(0)
+  const [downloading, setDownloading] = useState('')
   const fileRef = useRef(null)
   const tableRef = useRef(null)
 
@@ -87,6 +88,22 @@ export default function ExcelView() {
     nav('/new-listing')
   }
 
+  const handleDownload = async (kind) => {
+    setDownloading(kind)
+    setError(null)
+    try {
+      if (kind === 'template') {
+        await downloadTemplate()
+      } else {
+        await downloadCSVStage(csvSessionId, activeTab)
+      }
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setDownloading('')
+    }
+  }
+
   return (
     <div className="card" style={{ overflow: 'hidden' }}>
       {/* Header */}
@@ -101,21 +118,30 @@ export default function ExcelView() {
           )}
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
-          <a href={getTemplateURL()} download style={{ textDecoration: 'none' }}>
-            <button className="btn btn-outline btn-sm" style={{ fontSize: 11 }}>
-              <Download size={12} /> Template
-            </button>
-          </a>
+          <button
+            type="button"
+            className="btn btn-outline btn-sm"
+            style={{ fontSize: 11 }}
+            onClick={() => handleDownload('template')}
+            disabled={Boolean(downloading)}
+          >
+            {downloading === 'template' ? <Loader2 size={12} className="spin" /> : <Download size={12} />} Template
+          </button>
           <button className="btn btn-outline btn-sm" style={{ fontSize: 11 }} onClick={() => fileRef.current?.click()}>
             <Upload size={12} /> Upload CSV
           </button>
           <input ref={fileRef} type="file" accept=".csv,.xlsx,.xls" hidden onChange={e => { handleUpload(e.target.files[0]); e.target.value = '' }} />
           {csvSessionId && (
-            <a href={getDownloadURL(csvSessionId, activeTab)} download style={{ textDecoration: 'none' }}>
-              <button className="btn btn-primary btn-sm" style={{ fontSize: 11 }}>
-                <Download size={12} /> Download {STAGE_TABS.find(t => t.key === activeTab)?.label}
-              </button>
-            </a>
+            <button
+              type="button"
+              className="btn btn-primary btn-sm"
+              style={{ fontSize: 11 }}
+              onClick={() => handleDownload('stage')}
+              disabled={Boolean(downloading)}
+            >
+              {downloading === 'stage' ? <Loader2 size={12} className="spin" /> : <Download size={12} />}
+              Download {STAGE_TABS.find(t => t.key === activeTab)?.label}
+            </button>
           )}
         </div>
       </div>
@@ -161,9 +187,15 @@ export default function ExcelView() {
             Upload your Myntra seller template CSV, or download our template to get started.
           </div>
           <div style={{ display: 'flex', gap: 10, justifyContent: 'center' }}>
-            <a href={getTemplateURL()} download style={{ textDecoration: 'none' }}>
-              <button className="btn btn-outline btn-sm">Download template</button>
-            </a>
+            <button
+              type="button"
+              className="btn btn-outline btn-sm"
+              onClick={() => handleDownload('template')}
+              disabled={Boolean(downloading)}
+            >
+              {downloading === 'template' && <Loader2 size={12} className="spin" />}
+              Download template
+            </button>
             <button className="btn btn-primary btn-sm" onClick={() => fileRef.current?.click()}>
               Upload your CSV
             </button>

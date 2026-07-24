@@ -16,14 +16,23 @@ import './index.css'
 function Breadcrumb() {
   const loc = useLocation()
   const map = {
-    '/dashboard': 'Dashboard',
-    '/new-listing': 'New Listing',
-    '/new-listing/verify': 'Verification',
-    '/new-listing/success': 'Published',
+    '/dashboard': { title: 'Overview', subtitle: 'Your catalog at a glance' },
+    '/new-listing': { title: 'Create listing', subtitle: 'Build a trusted product page' },
+    '/new-listing/verify': { title: 'Verification', subtitle: 'Review catalog evidence' },
+    '/new-listing/success': { title: 'Published', subtitle: 'Listing sent for quality review' },
+    '/verify': { title: 'Verification', subtitle: 'Review catalog evidence' },
+    '/anchor-intro': { title: 'Anchor intelligence', subtitle: 'How product trust is built' },
+    '/publish': { title: 'Published', subtitle: 'Listing sent for quality review' },
   }
+  const page = map[loc.pathname] || { title: 'Anchor Studio', subtitle: 'Seller workspace' }
+
   return (
     <div className="breadcrumb">
-      Cataloging / <b>{map[loc.pathname] || 'Anchor'}</b>
+      <span className="breadcrumb-overline">Seller studio</span>
+      <span className="breadcrumb-copy">
+        <b>{page.title}</b>
+        <span>{page.subtitle}</span>
+      </span>
     </div>
   )
 }
@@ -31,17 +40,16 @@ function Breadcrumb() {
 function Layout() {
   const { isAuthenticated, logout, seller } = useApp()
   const loc = useLocation()
-  
-  // Safeguard against accidental reloads during the live presentation
+  const isCitizenRoute = loc.pathname.startsWith('/myntra') || loc.pathname.startsWith('/product/')
+
   useEffect(() => {
-    const handleBeforeUnload = (e) => {
-      e.preventDefault();
-      e.returnValue = ''; // Triggers the browser's native confirmation dialog
-    };
-    window.addEventListener('beforeunload', handleBeforeUnload);
-    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
-  }, []);
-  
+    const content = document.querySelector('.seller-shell .content')
+    if (content) content.scrollTop = 0
+    document.title = isCitizenRoute
+      ? 'Anchor — Myntra Partner Portal'
+      : 'Anchor Studio — Myntra Seller Workspace'
+  }, [isCitizenRoute, loc.pathname])
+
   if (!isAuthenticated && loc.pathname === '/login') {
     return (
       <Routes>
@@ -50,30 +58,35 @@ function Layout() {
     )
   }
 
-  const isMyntraRoute = loc.pathname.startsWith('/myntra');
-
   return (
-    <div className={isMyntraRoute ? '' : "layout"}>
-      {isAuthenticated && !isMyntraRoute && <Sidebar />}
-      <div className={isMyntraRoute ? '' : "main"}>
-        {isAuthenticated && !isMyntraRoute && (
+    <div className={isCitizenRoute ? '' : 'layout seller-shell'}>
+      {isAuthenticated && !isCitizenRoute && <Sidebar />}
+      <div className={isCitizenRoute ? '' : 'main'}>
+        {isAuthenticated && !isCitizenRoute && (
           <header className="top-bar">
             <Breadcrumb />
-            <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
-              <div style={{ fontSize: '13px', fontWeight: '500' }}>
-                {seller?.business_name || 'Seller'}
+            <div className="topbar-actions">
+              <div className="sync-pill" aria-label="Catalog services online">
+                <span className="sync-dot" /> Catalog sync live
+              </div>
+              <div className="topbar-user">
+                <div className="topbar-avatar">
+                  {(seller?.business_name || 'Seller').substring(0, 2).toUpperCase()}
+                </div>
+                <div className="topbar-user-name" style={{ fontSize: '12px', fontWeight: '700' }}>
+                  {seller?.business_name || 'Seller'}
+                </div>
               </div>
               <button 
                 onClick={logout}
-                className="btn btn-ghost btn-sm"
-                style={{ color: 'var(--text-secondary)' }}
+                className="btn btn-ghost btn-sm topbar-logout"
               >
-                Logout
+                Sign out
               </button>
             </div>
           </header>
         )}
-        <div className={isMyntraRoute ? '' : "content"}>
+        <div className={isCitizenRoute ? '' : 'content'}>
           <Routes>
             <Route path="/" element={<Navigate to={isAuthenticated ? "/dashboard" : "/login"} replace />} />
             <Route path="/myntra" element={<CitizenView />} />

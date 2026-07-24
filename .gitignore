@@ -3,3 +3,11 @@ node_modules/
 backend/services/model_best.safetensors
 backend/uploads/
 .cache/
+
+# Local runtime evidence and generated catalog assets. Keep these on the
+# development machine, but never commit them to the repository.
+/pregenerated/
+/uploads/
+/outputs/
+/data/*.db
+/backend/data/*.db

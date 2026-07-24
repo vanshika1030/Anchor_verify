@@ -12,7 +12,11 @@ export default function ProductView() {
   useEffect(() => {
     fetch(`http://localhost:3001/api/products/${id}`)
       .then(r => r.json())
-      .then(data => { setProduct(data); setLoading(false) })
+      .then(data => {
+        setProduct(data)
+        setSelectedSize(data.seller_metadata?.modelSize || Object.keys(data.size_chart || {})[0] || 'M')
+        setLoading(false)
+      })
       .catch(() => setLoading(false))
   }, [id])
 
@@ -36,8 +40,20 @@ export default function ProductView() {
   }
 
   const attrs = product.attributes || {}
-  const isVerified = product.verification_status === 'pass' || product.verification_status === 'verified'
-  const isWarning = product.verification_status === 'warning'
+  const sellerMetadata = product.seller_metadata || {}
+  const verificationReport = product.verification_report || {}
+  const evidenceStatus = (
+    verificationReport.verdict?.status ||
+    product.verification_status ||
+    ''
+  ).toLowerCase()
+  const isVerified = ['pass', 'verified'].includes(evidenceStatus) || (
+    evidenceStatus === 'published' && !verificationReport.verdict
+  )
+  const isWarning = evidenceStatus === 'warning'
+  const availableSizes = Object.keys(product.size_chart || {})
+  const comparisonRows = verificationReport.comparison || []
+  const verifiedChecks = comparisonRows.filter(row => row.status === 'match').length
   
   // Choose images: prefer catalog images, fallback to ai_model, then anchor
   let images = []
@@ -66,10 +82,22 @@ export default function ProductView() {
       </nav>
 
       {/* Breadcrumbs */}
-      <div style={{ padding: '20px 40px', fontSize: 14, color: '#282c3f', display: 'flex', gap: 6, alignItems: 'center' }}>
-        <span style={{ cursor: 'pointer' }} onClick={() => navigate('/myntra')}>Home</span> <ChevronRight size={14} color="#696e79" /> 
-        <span>Women</span> <ChevronRight size={14} color="#696e79" /> 
-        <span>Clothing</span> <ChevronRight size={14} color="#696e79" /> 
+      <div style={{ padding: '20px 40px', fontSize: 14, color: '#282c3f', display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+        <span style={{ cursor: 'pointer' }} onClick={() => navigate('/myntra')}>Home</span>
+        {product.category ? (
+          product.category.split('>').map((cat, i) => (
+            <span key={i} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <ChevronRight size={14} color="#696e79" />
+              <span>{cat.trim()}</span>
+            </span>
+          ))
+        ) : (
+          <>
+            <ChevronRight size={14} color="#696e79" /> <span>Women</span>
+            <ChevronRight size={14} color="#696e79" /> <span>Clothing</span>
+          </>
+        )}
+        <ChevronRight size={14} color="#696e79" /> 
         <span style={{ fontWeight: 600 }}>{product.brand_name || 'Brand'}</span>
       </div>
 
@@ -80,7 +108,7 @@ export default function ProductView() {
           {images.length > 0 ? (
             images.slice(0, Math.max(2, images.length)).map((img, i) => (
               <div key={i} style={{ aspectRatio: '3/4', background: '#f5f5f6', position: 'relative', overflow: 'hidden' }}>
-                <img src={img} alt={`${product.title} view ${i}`} style={{ width: '100%', height: '100%', objectFit: 'cover', transition: 'transform 0.3s ease' }} onMouseEnter={(e) => e.currentTarget.style.transform = 'scale(1.03)'} onMouseLeave={(e) => e.currentTarget.style.transform = 'scale(1)'} />
+                <img src={img} alt={`${product.title} view ${i + 1}`} style={{ width: '100%', height: '100%', objectFit: 'contain', transition: 'transform 0.3s ease', background: '#fff' }} onMouseEnter={(e) => e.currentTarget.style.transform = 'scale(1.03)'} onMouseLeave={(e) => e.currentTarget.style.transform = 'scale(1)'} />
               </div>
             ))
           ) : (
@@ -95,9 +123,15 @@ export default function ProductView() {
           <h1 style={{ fontSize: 24, fontWeight: 700, color: '#282c3f', marginBottom: 8 }}>
             {product.brand_name || 'Brand'}
           </h1>
-          <h2 style={{ fontSize: 20, color: '#535766', fontWeight: 400, marginBottom: 16 }}>
+          <h2 style={{ fontSize: 20, color: '#535766', fontWeight: 400, marginBottom: 8 }}>
             {product.title || attrs.garment_type || 'Product'}
           </h2>
+          
+          {product.description && (
+            <p style={{ fontSize: 16, color: '#282c3f', lineHeight: 1.5, margin: '0 0 16px 0' }}>
+              {product.description}
+            </p>
+          )}
 
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 8px', border: '1px solid #eaeaec', borderRadius: 4, width: 'fit-content', marginBottom: 16, cursor: 'pointer' }}>
             <span style={{ fontWeight: 700, fontSize: 14 }}>4.2</span>
@@ -130,7 +164,7 @@ export default function ProductView() {
               <span style={{ fontSize: 14, fontWeight: 700, color: '#ff3f6c', cursor: 'pointer' }}>SIZE CHART</span>
             </div>
             <div style={{ display: 'flex', gap: 12 }}>
-              {['XS', 'S', 'M', 'L', 'XL'].map(s => (
+              {(availableSizes.length ? availableSizes : ['XS', 'S', 'M', 'L', 'XL']).map(s => (
                 <div 
                   key={s} 
                   onClick={() => setSelectedSize(s)}
@@ -182,9 +216,12 @@ export default function ProductView() {
             </div>
             <p style={{ fontSize: 13, color: '#535766', lineHeight: 1.5, margin: 0 }}>
               This product’s attributes and images have been cross-checked by Anchor AI for authenticity against the seller's physical garment.
-              {product.verification_score && (
+              <span style={{ display: 'block', marginTop: 6 }}>
+                Seller claims, physical anchor imagery, catalog views, model fit, and sizing were checked before publication.
+              </span>
+              {product.verification_score != null && (
                 <span style={{ display: 'block', marginTop: 8, fontWeight: 600, color: '#03a685' }}>
-                  Anchor AI Confidence: {product.verification_score.toFixed(1)}%
+                  Evidence confidence: {Number(product.verification_score).toFixed(1)}% · {verifiedChecks}/{comparisonRows.length || verifiedChecks} checks matched
                 </span>
               )}
             </p>
@@ -221,6 +258,70 @@ export default function ProductView() {
             <p style={{ fontSize: 13, color: '#535766' }}>Please enter PIN code to check delivery time & Pay on Delivery Availability</p>
           </div>
 
+          {/* Size & Fit */}
+          <div style={{ marginBottom: 30 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12, fontSize: 16, fontWeight: 700, color: '#282c3f', marginBottom: 16, textTransform: 'uppercase' }}>
+              Size & Fit
+            </div>
+            <p style={{ fontSize: 14, color: '#282c3f', margin: 0 }}>
+              The model (height {sellerMetadata.modelHeight || product.attributes?.model_height || product.attributes?.height || "5'8\""}) is wearing size {sellerMetadata.modelSize || product.attributes?.model_size || product.attributes?.size || 'S'} with a {sellerMetadata.modelBuild || product.attributes?.model_build || 'seller-declared'} build.
+            </p>
+          </div>
+
+          {product.size_chart && Object.keys(product.size_chart).length > 0 && (
+            <div style={{ marginBottom: 30, borderTop: '1px solid #eaeaec', paddingTop: 24 }}>
+              <h3 style={{ fontSize: 16, fontWeight: 700, color: '#282c3f', marginBottom: 14, textTransform: 'uppercase' }}>
+                Seller Size Chart
+              </h3>
+              <div style={{ overflowX: 'auto' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+                  <thead>
+                    <tr style={{ background: '#f5f5f6', textAlign: 'left' }}>
+                      <th style={{ padding: 10 }}>Size</th>
+                      <th style={{ padding: 10 }}>Chest</th>
+                      <th style={{ padding: 10 }}>Length</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {Object.entries(product.size_chart).map(([size, values]) => (
+                      <tr key={size} style={{ borderBottom: '1px solid #eaeaec' }}>
+                        <td style={{ padding: 10, fontWeight: 700 }}>{size}</td>
+                        <td style={{ padding: 10 }}>{values.chest ?? '—'}{values.chest != null ? ' in' : ''}</td>
+                        <td style={{ padding: 10 }}>{values.length ?? '—'}{values.length != null ? ' in' : ''}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {Object.keys(sellerMetadata).length > 0 && (
+            <div style={{ marginBottom: 30, borderTop: '1px solid #eaeaec', paddingTop: 24 }}>
+              <h3 style={{ fontSize: 16, fontWeight: 700, color: '#282c3f', marginBottom: 6, textTransform: 'uppercase' }}>
+                Seller-declared details
+              </h3>
+              <p style={{ fontSize: 12, color: '#7e818c', margin: '0 0 14px' }}>Shown exactly from the submitted catalog row.</p>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px 24px' }}>
+                {[
+                  ['Colour', sellerMetadata.primaryColour || sellerMetadata.brandColour],
+                  ['Fabric', sellerMetadata.fabric],
+                  ['Pattern', sellerMetadata.pattern],
+                  ['Fit', sellerMetadata.fit],
+                  ['Garment length', sellerMetadata.garmentLength],
+                  ['Occasion', sellerMetadata.occasion],
+                  ['Sleeve', sellerMetadata.sleeveLength],
+                  ['Wash care', sellerMetadata.washCare],
+                ].filter(([, value]) => value).map(([label, value]) => (
+                  <div key={label} style={{ borderBottom: '1px solid #eaeaec', paddingBottom: 8 }}>
+                    <div style={{ fontSize: 12, color: '#7e818c', marginBottom: 3 }}>{label}</div>
+                    <div style={{ fontSize: 14, color: '#282c3f' }}>{value}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* Product Details (Attributes) */}
           <div style={{ borderTop: '1px solid #eaeaec', paddingTop: 24 }}>
             <h3 style={{ fontSize: 16, fontWeight: 700, color: '#282c3f', marginBottom: 16, textTransform: 'uppercase' }}>
@@ -233,7 +334,7 @@ export default function ProductView() {
                     {key.replace(/_/g, ' ')}
                   </div>
                   <div style={{ fontSize: 14, color: '#282c3f', borderBottom: '1px solid #eaeaec', paddingBottom: 8 }}>
-                    {typeof val === 'object' ? val.value : val}
+                    {typeof val === 'object' ? (val?.value ?? JSON.stringify(val)) : String(val)}
                   </div>
                 </div>
               ))}

@@ -35,7 +35,7 @@ export default function ProcessingOverlay({ onComplete }) {
       }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', marginBottom: '24px' }}>
           <Anchor size={28} color="var(--accent)" />
-          <div style={{ fontSize: '22px', fontWeight: 700 }}>Anchor <span style={{ color: 'var(--accent)' }}>Verify</span></div>
+          <div style={{ fontSize: '22px', fontWeight: 700 }}>Anchor <span style={{ color: 'var(--accent)' }}>Studio</span></div>
         </div>
         <div className="proc-title" style={{ color: 'rgba(255,255,255,0.9)' }}>Verifying listing integrity...</div>
         <ul className="proc-steps">
@@ -56,7 +56,7 @@ export default function ProcessingOverlay({ onComplete }) {
             )
           })}
         </ul>
-        <div className="prog-bar" style={{ background: 'rgba(255,255,255,0.1)' }}><div className="prog-fill" style={{ width: `${pct}%`, background: 'linear-gradient(90deg, #FF3F6C, #F77062)', boxShadow: '0 0 10px rgba(255,63,108,0.5)' }} /></div>
+        <div className="prog-bar" style={{ background: 'rgba(255,255,255,0.1)' }}><div className="prog-fill" style={{ width: `${pct}%`, background: 'linear-gradient(90deg, var(--accent), var(--coral))', boxShadow: '0 0 10px var(--accent-light)' }} /></div>
         <div style={{ textAlign: 'center', marginTop: 16, fontSize: 13, color: 'rgba(255,255,255,0.5)' }}>
           Processing — approx 8 seconds
         </div>
