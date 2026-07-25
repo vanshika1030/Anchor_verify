@@ -1,0 +1,190 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 1600" width="1200" height="1600">
+  <defs>
+    <filter id="shadow" x="-4%" y="-4%" width="108%" height="108%">
+      <feDropShadow dx="2" dy="3" stdDeviation="4" flood-color="#00000018"/>
+    </filter>
+    <linearGradient id="accentGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#6C63FF"/>
+      <stop offset="100%" stop-color="#4ECDC4"/>
+    </linearGradient>
+    <linearGradient id="passGrad" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#2ECC71"/>
+      <stop offset="100%" stop-color="#27AE60"/>
+    </linearGradient>
+    <linearGradient id="failGrad" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#E74C3C"/>
+      <stop offset="100%" stop-color="#C0392B"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1200" height="1600" fill="#FAFBFC" rx="0"/>
+
+  <!-- Title -->
+  <text x="600" y="60" text-anchor="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="36" font-weight="800" fill="#1A1A2E" letter-spacing="-0.5">⚓  Anchor — Verification Workflow</text>
+  <text x="600" y="92" text-anchor="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="16" fill="#6B7280">One real photo. Every claim checked. Before it goes live.</text>
+
+  <!-- ════════════════ STEP 1: SELLER UPLOADS ════════════════ -->
+  <rect x="340" y="130" width="520" height="110" rx="16" fill="#FFFFFF" stroke="#E5E7EB" stroke-width="1.5" filter="url(#shadow)"/>
+  <rect x="340" y="130" width="520" height="6" rx="3" fill="url(#accentGrad)"/>
+  <text x="380" y="168" font-family="Inter, Helvetica, Arial, sans-serif" font-size="13" font-weight="700" fill="#6C63FF" letter-spacing="1.5">STEP 1</text>
+  <text x="380" y="195" font-family="Inter, Helvetica, Arial, sans-serif" font-size="20" font-weight="700" fill="#1A1A2E">Seller Uploads Anchor Photos</text>
+  <text x="380" y="220" font-family="Inter, Helvetica, Arial, sans-serif" font-size="13" fill="#6B7280">Real photos of actual garment: Front + Back + Close-up + Size Chart</text>
+
+  <!-- Arrow 1 -->
+  <line x1="600" y1="240" x2="600" y2="280" stroke="#D1D5DB" stroke-width="2"/>
+  <polygon points="600,288 594,276 606,276" fill="#D1D5DB"/>
+
+  <!-- ════════════════ STEP 2: LOCAL AI EXTRACTION ════════════════ -->
+  <rect x="340" y="290" width="520" height="130" rx="16" fill="#FFFFFF" stroke="#E5E7EB" stroke-width="1.5" filter="url(#shadow)"/>
+  <rect x="340" y="290" width="520" height="6" rx="3" fill="url(#accentGrad)"/>
+  <text x="380" y="328" font-family="Inter, Helvetica, Arial, sans-serif" font-size="13" font-weight="700" fill="#6C63FF" letter-spacing="1.5">STEP 2 — LOCAL AI (Zero API Calls)</text>
+  <text x="380" y="355" font-family="Inter, Helvetica, Arial, sans-serif" font-size="20" font-weight="700" fill="#1A1A2E">Attribute Extraction</text>
+  
+  <!-- Sub-items -->
+  <rect x="390" y="370" width="140" height="32" rx="8" fill="#EEF2FF" stroke="#C7D2FE" stroke-width="1"/>
+  <text x="460" y="391" text-anchor="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#4338CA">ViT Classifier</text>
+  
+  <rect x="545" y="370" width="140" height="32" rx="8" fill="#EEF2FF" stroke="#C7D2FE" stroke-width="1"/>
+  <text x="615" y="391" text-anchor="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#4338CA">CLIP Zero-Shot</text>
+  
+  <rect x="700" y="370" width="140" height="32" rx="8" fill="#EEF2FF" stroke="#C7D2FE" stroke-width="1"/>
+  <text x="770" y="391" text-anchor="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#4338CA">Segmentation</text>
+
+  <!-- Arrow 2 -->
+  <line x1="600" y1="420" x2="600" y2="460" stroke="#D1D5DB" stroke-width="2"/>
+  <polygon points="600,468 594,456 606,456" fill="#D1D5DB"/>
+
+  <!-- ════════════════ STEP 3: 5-LAYER VERIFICATION ════════════════ -->
+  <rect x="240" y="470" width="720" height="380" rx="16" fill="#FFFFFF" stroke="#6C63FF" stroke-width="2" filter="url(#shadow)"/>
+  <rect x="240" y="470" width="720" height="6" rx="3" fill="url(#accentGrad)"/>
+  <text x="290" y="510" font-family="Inter, Helvetica, Arial, sans-serif" font-size="13" font-weight="700" fill="#6C63FF" letter-spacing="1.5">STEP 3 — 5-LAYER VERIFICATION ENGINE</text>
+
+  <!-- Layer 1 -->
+  <rect x="280" y="530" width="640" height="48" rx="10" fill="#F0FDF4" stroke="#BBF7D0" stroke-width="1"/>
+  <text x="310" y="550" font-family="Inter, Helvetica, Arial, sans-serif" font-size="11" font-weight="800" fill="#16A34A">L1</text>
+  <text x="340" y="550" font-family="Inter, Helvetica, Arial, sans-serif" font-size="14" font-weight="600" fill="#15803D">Visual Gate</text>
+  <text x="340" y="568" font-family="Inter, Helvetica, Arial, sans-serif" font-size="11" fill="#4ADE80">CLIP cosine similarity + pHash duplicate detection → "Is this the same product?"</text>
+  <rect x="830" y="540" width="70" height="24" rx="6" fill="#DCFCE7"/>
+  <text x="865" y="557" text-anchor="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="10" font-weight="700" fill="#16A34A">LOCAL</text>
+
+  <!-- Layer 2 -->
+  <rect x="280" y="588" width="640" height="48" rx="10" fill="#EFF6FF" stroke="#BFDBFE" stroke-width="1"/>
+  <text x="310" y="608" font-family="Inter, Helvetica, Arial, sans-serif" font-size="11" font-weight="800" fill="#2563EB">L2</text>
+  <text x="340" y="608" font-family="Inter, Helvetica, Arial, sans-serif" font-size="14" font-weight="600" fill="#1D4ED8">Attribute Cross-Check</text>
+  <text x="340" y="626" font-family="Inter, Helvetica, Arial, sans-serif" font-size="11" fill="#60A5FA">ViT (89% acc) + CLIP classifies 6 core + 13 extended garment attributes</text>
+  <rect x="830" y="598" width="70" height="24" rx="6" fill="#DBEAFE"/>
+  <text x="865" y="615" text-anchor="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="10" font-weight="700" fill="#2563EB">LOCAL</text>
+
+  <!-- Layer 3 -->
+  <rect x="280" y="646" width="640" height="48" rx="10" fill="#FFFBEB" stroke="#FDE68A" stroke-width="1"/>
+  <text x="310" y="666" font-family="Inter, Helvetica, Arial, sans-serif" font-size="11" font-weight="800" fill="#D97706">L3</text>
+  <text x="340" y="666" font-family="Inter, Helvetica, Arial, sans-serif" font-size="14" font-weight="600" fill="#B45309">Deterministic Comparison</text>
+  <text x="340" y="684" font-family="Inter, Helvetica, Arial, sans-serif" font-size="11" fill="#FBBF24">Synonym matching, HSV color analysis, size chart validation — plain code decides, not AI</text>
+  <rect x="830" y="656" width="70" height="24" rx="6" fill="#FEF3C7"/>
+  <text x="865" y="673" text-anchor="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="10" font-weight="700" fill="#D97706">LOCAL</text>
+
+  <!-- Layer 4 -->
+  <rect x="280" y="704" width="640" height="48" rx="10" fill="#FDF2F8" stroke="#FBCFE8" stroke-width="1"/>
+  <text x="310" y="724" font-family="Inter, Helvetica, Arial, sans-serif" font-size="11" font-weight="800" fill="#DB2777">L4</text>
+  <text x="340" y="724" font-family="Inter, Helvetica, Arial, sans-serif" font-size="14" font-weight="600" fill="#BE185D">Bayesian Mathematical Fusion</text>
+  <text x="340" y="742" font-family="Inter, Helvetica, Arial, sans-serif" font-size="11" fill="#F472B6">P(match|evidence) via likelihood ratios → calibrated confidence score (0–100%)</text>
+  <rect x="830" y="714" width="70" height="24" rx="6" fill="#FCE7F3"/>
+  <text x="865" y="731" text-anchor="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="10" font-weight="700" fill="#DB2777">LOCAL</text>
+
+  <!-- Layer 5 -->
+  <rect x="280" y="762" width="640" height="48" rx="10" fill="#F5F3FF" stroke="#DDD6FE" stroke-width="1"/>
+  <text x="310" y="782" font-family="Inter, Helvetica, Arial, sans-serif" font-size="11" font-weight="800" fill="#7C3AED">L5</text>
+  <text x="340" y="782" font-family="Inter, Helvetica, Arial, sans-serif" font-size="14" font-weight="600" fill="#6D28D9">Listing Generation</text>
+  <text x="340" y="800" font-family="Inter, Helvetica, Arial, sans-serif" font-size="11" fill="#A78BFA">SEO titles, descriptions, trend tags (#y2k, #streetwear), AI model images</text>
+  <rect x="830" y="772" width="70" height="24" rx="6" fill="#EDE9FE"/>
+  <text x="865" y="789" text-anchor="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="10" font-weight="700" fill="#7C3AED">API</text>
+
+  <!-- Key insight callout -->
+  <rect x="280" y="822" width="640" height="22" rx="4" fill="#F9FAFB"/>
+  <text x="600" y="837" text-anchor="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="11" font-weight="600" fill="#9CA3AF">Layers 1–4 run 100% locally • Zero external API calls • Works offline</text>
+
+  <!-- Arrow 3 (splits into two) -->
+  <line x1="600" y1="850" x2="600" y2="890" stroke="#D1D5DB" stroke-width="2"/>
+
+  <!-- Diamond decision -->
+  <polygon points="600,900 650,935 600,970 550,935" fill="#FFFFFF" stroke="#6C63FF" stroke-width="2" filter="url(#shadow)"/>
+  <text x="600" y="940" text-anchor="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="13" font-weight="700" fill="#6C63FF">PASS?</text>
+
+  <!-- Left branch: FAIL -->
+  <line x1="550" y1="935" x2="370" y2="935" stroke="#E74C3C" stroke-width="2"/>
+  <polygon points="362,935 374,929 374,941" fill="#E74C3C"/>
+
+  <rect x="120" y="895" width="250" height="100" rx="14" fill="#FFFFFF" stroke="#FCA5A5" stroke-width="1.5" filter="url(#shadow)"/>
+  <rect x="120" y="895" width="250" height="5" rx="3" fill="url(#failGrad)"/>
+  <text x="245" y="930" text-anchor="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="16" font-weight="700" fill="#DC2626">❌ Issues Found</text>
+  <text x="245" y="952" text-anchor="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="12" fill="#6B7280">AI Co-Pilot suggests fixes</text>
+  <text x="245" y="970" text-anchor="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="12" fill="#6B7280">with 1-click accept</text>
+
+  <!-- Loop arrow back up from FAIL -->
+  <line x1="245" y1="995" x2="245" y2="1020" stroke="#F87171" stroke-width="1.5" stroke-dasharray="6,4"/>
+  <text x="245" y="1040" text-anchor="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="11" font-weight="600" fill="#F87171">Fix & re-verify ↩</text>
+
+  <!-- Right branch: PASS -->
+  <line x1="650" y1="935" x2="830" y2="935" stroke="#2ECC71" stroke-width="2"/>
+  <polygon points="838,935 826,929 826,941" fill="#2ECC71"/>
+
+  <rect x="830" y="895" width="250" height="100" rx="14" fill="#FFFFFF" stroke="#86EFAC" stroke-width="1.5" filter="url(#shadow)"/>
+  <rect x="830" y="895" width="250" height="5" rx="3" fill="url(#passGrad)"/>
+  <text x="955" y="930" text-anchor="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="16" font-weight="700" fill="#16A34A">✅ Verified</text>
+  <text x="955" y="952" text-anchor="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="12" fill="#6B7280">Bayesian score attached</text>
+  <text x="955" y="970" text-anchor="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="12" fill="#6B7280">+ trend tags generated</text>
+
+  <!-- Arrow from PASS down -->
+  <line x1="955" y1="995" x2="955" y2="1050" stroke="#D1D5DB" stroke-width="2"/>
+  <polygon points="955,1058 949,1046 961,1046" fill="#D1D5DB"/>
+
+  <!-- ════════════════ STEP 4: PUBLISH ════════════════ -->
+  <rect x="340" y="1060" width="520" height="100" rx="16" fill="#FFFFFF" stroke="#E5E7EB" stroke-width="1.5" filter="url(#shadow)"/>
+  <rect x="340" y="1060" width="520" height="6" rx="3" fill="url(#accentGrad)"/>
+  <text x="380" y="1098" font-family="Inter, Helvetica, Arial, sans-serif" font-size="13" font-weight="700" fill="#6C63FF" letter-spacing="1.5">STEP 4</text>
+  <text x="380" y="1125" font-family="Inter, Helvetica, Arial, sans-serif" font-size="20" font-weight="700" fill="#1A1A2E">Publish to Catalog</text>
+  <text x="380" y="1148" font-family="Inter, Helvetica, Arial, sans-serif" font-size="13" fill="#6B7280">AI model images (5 views) + verified metadata + trend tags → live listing</text>
+
+  <!-- Arrow to Citizen -->
+  <line x1="600" y1="1160" x2="600" y2="1200" stroke="#D1D5DB" stroke-width="2"/>
+  <polygon points="600,1208 594,1196 606,1196" fill="#D1D5DB"/>
+
+  <!-- ════════════════ CITIZEN VIEW ════════════════ -->
+  <rect x="340" y="1210" width="520" height="120" rx="16" fill="#FFFFFF" stroke="#E5E7EB" stroke-width="1.5" filter="url(#shadow)"/>
+  <rect x="340" y="1210" width="520" height="6" rx="3" fill="#1A1A2E"/>
+  <text x="380" y="1250" font-family="Inter, Helvetica, Arial, sans-serif" font-size="13" font-weight="700" fill="#1A1A2E" letter-spacing="1.5">CUSTOMER SEES</text>
+  <text x="380" y="1277" font-family="Inter, Helvetica, Arial, sans-serif" font-size="20" font-weight="700" fill="#1A1A2E">Verified Product Listing</text>
+  <text x="380" y="1302" font-family="Inter, Helvetica, Arial, sans-serif" font-size="13" fill="#6B7280">⚓ Anchor Verified badge · Confidence score · 5 AI model views</text>
+  <text x="380" y="1320" font-family="Inter, Helvetica, Arial, sans-serif" font-size="13" fill="#6B7280">Accurate attributes · Trend tags · Category path · Size & fit info</text>
+
+  <!-- ════════════════ BOTTOM TAGLINE ════════════════ -->
+  <rect x="340" y="1380" width="520" height="50" rx="12" fill="#1A1A2E"/>
+  <text x="600" y="1411" text-anchor="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="15" font-weight="600" fill="#FFFFFF">⚓  Trust shouldn't be optional.</text>
+
+  <!-- Side annotation: What gets checked -->
+  <rect x="30" y="490" width="180" height="260" rx="12" fill="#F9FAFB" stroke="#E5E7EB" stroke-width="1"/>
+  <text x="120" y="518" text-anchor="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="11" font-weight="700" fill="#6B7280" letter-spacing="1">WHAT GETS CHECKED</text>
+  <text x="50" y="545" font-family="Inter, Helvetica, Arial, sans-serif" font-size="12" fill="#374151">• Garment type</text>
+  <text x="50" y="565" font-family="Inter, Helvetica, Arial, sans-serif" font-size="12" fill="#374151">• Color accuracy</text>
+  <text x="50" y="585" font-family="Inter, Helvetica, Arial, sans-serif" font-size="12" fill="#374151">• Sleeve length</text>
+  <text x="50" y="605" font-family="Inter, Helvetica, Arial, sans-serif" font-size="12" fill="#374151">• Neck type</text>
+  <text x="50" y="625" font-family="Inter, Helvetica, Arial, sans-serif" font-size="12" fill="#374151">• Pattern / print</text>
+  <text x="50" y="645" font-family="Inter, Helvetica, Arial, sans-serif" font-size="12" fill="#374151">• Fabric texture</text>
+  <text x="50" y="665" font-family="Inter, Helvetica, Arial, sans-serif" font-size="12" fill="#374151">• Overall length</text>
+  <text x="50" y="685" font-family="Inter, Helvetica, Arial, sans-serif" font-size="12" fill="#374151">• Fit / silhouette</text>
+  <text x="50" y="705" font-family="Inter, Helvetica, Arial, sans-serif" font-size="12" fill="#374151">• Model proportions</text>
+  <text x="50" y="725" font-family="Inter, Helvetica, Arial, sans-serif" font-size="12" fill="#374151">• Size chart match</text>
+
+  <!-- Side annotation: What gets generated -->
+  <rect x="990" y="490" width="180" height="220" rx="12" fill="#F9FAFB" stroke="#E5E7EB" stroke-width="1"/>
+  <text x="1080" y="518" text-anchor="middle" font-family="Inter, Helvetica, Arial, sans-serif" font-size="11" font-weight="700" fill="#6B7280" letter-spacing="1">WHAT GETS GENERATED</text>
+  <text x="1010" y="545" font-family="Inter, Helvetica, Arial, sans-serif" font-size="12" fill="#374151">• SEO product title</text>
+  <text x="1010" y="565" font-family="Inter, Helvetica, Arial, sans-serif" font-size="12" fill="#374151">• Rich description</text>
+  <text x="1010" y="585" font-family="Inter, Helvetica, Arial, sans-serif" font-size="12" fill="#374151">• Trend tags</text>
+  <text x="1010" y="605" font-family="Inter, Helvetica, Arial, sans-serif" font-size="12" fill="#374151">• Category path</text>
+  <text x="1010" y="625" font-family="Inter, Helvetica, Arial, sans-serif" font-size="12" fill="#374151">• AI model images</text>
+  <text x="1010" y="645" font-family="Inter, Helvetica, Arial, sans-serif" font-size="12" fill="#374151">  (5 angle views)</text>
+  <text x="1010" y="665" font-family="Inter, Helvetica, Arial, sans-serif" font-size="12" fill="#374151">• Bayesian score</text>
+  <text x="1010" y="685" font-family="Inter, Helvetica, Arial, sans-serif" font-size="12" fill="#374151">• Verified badge</text>
+</svg>
