@@ -13,3 +13,8 @@ backend/uploads/
 /backend/data/*.db
 __pycache__/
 *.pyc
+
+# Internal working documents — not for the repo
+*.patch
+*.pdf
+PITCH_TECHNICAL_DESIGN.md
