@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import React, { useEffect, Component } from 'react'
 import { BrowserRouter, Routes, Route, useLocation, Navigate } from 'react-router-dom'
 import { AppProvider, useApp } from './AppContext'
 import Sidebar from './components/Sidebar'
@@ -12,6 +12,39 @@ import CitizenView from './pages/CitizenView'
 import AnchorIntro from './pages/AnchorIntro'
 import AuthGuard from './components/AuthGuard'
 import './index.css'
+
+class ErrorBoundary extends Component {
+  constructor(props) {
+    super(props)
+    this.state = { hasError: false, error: null, errorInfo: null }
+  }
+  static getDerivedStateFromError(error) {
+    return { hasError: true, error }
+  }
+  componentDidCatch(error, errorInfo) {
+    console.error('ErrorBoundary caught:', error, errorInfo)
+    this.setState({ errorInfo })
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div style={{ padding: 40, fontFamily: 'Inter, sans-serif', maxWidth: 700, margin: '0 auto' }}>
+          <h2 style={{ color: '#e53e3e' }}>⚠️ Something went wrong</h2>
+          <pre style={{ background: '#1a1a2e', color: '#ff6b6b', padding: 20, borderRadius: 8, overflow: 'auto', fontSize: 13, lineHeight: 1.6 }}>
+            {this.state.error?.toString()}
+            {'\n\n'}
+            {this.state.errorInfo?.componentStack}
+          </pre>
+          <button onClick={() => window.location.reload()} style={{ marginTop: 16, padding: '10px 24px', background: '#ff3f6c', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontSize: 14 }}>
+            Reload page
+          </button>
+        </div>
+      )
+    }
+    return this.props.children
+  }
+}
+
 
 function Breadcrumb() {
   const loc = useLocation()
@@ -109,10 +142,12 @@ function Layout() {
 
 export default function App() {
   return (
-    <AppProvider>
-      <BrowserRouter>
-        <Layout />
-      </BrowserRouter>
-    </AppProvider>
+    <ErrorBoundary>
+      <AppProvider>
+        <BrowserRouter>
+          <Layout />
+        </BrowserRouter>
+      </AppProvider>
+    </ErrorBoundary>
   )
 }

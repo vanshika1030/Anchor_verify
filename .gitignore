@@ -11,3 +11,5 @@ backend/uploads/
 /outputs/
 /data/*.db
 /backend/data/*.db
+__pycache__/
+*.pyc

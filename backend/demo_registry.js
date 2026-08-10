@@ -11,6 +11,7 @@
 
 import crypto from 'crypto'
 import fs from 'fs'
+import { findEvidenceProfile } from './evidence_profile.js'
 
 // ═══════════════════════════════════════════════════════════════════════
 // FINGERPRINT COMPUTATION
@@ -35,20 +36,20 @@ function computeFingerprint(declaredAttrs) {
 const DEMO_DECLARED_ATTRS = {
   // Product 1: Pink Ribbed Crop Top -> PASS
   croptop: {
-    garment_type: 'T-Shirt',
+    garment_type: 'Crop Top',
     primary_color: 'Pink',
-    secondary_color: 'None',
+    secondary_color: 'Red',
     pattern_type: 'Solid',
     neck_type: 'Round Neck',
     sleeve_length: 'Short Sleeve',
-    fit: 'Slim',
+    fit: 'Regular',
     fabric_composition: 'Polyester Blend',
     occasion_style: 'Casual',
     overall_length: 'Crop',
     hemline: 'Straight',
     brand: 'StyleUp',
-    model_size: 'S',
-    model_height: '5\'8',
+    model_size: 'M',
+    model_height: '5\'4',
   },
 
   // Product 2: Blue Cotton T-Shirt -> WARNING (fabric mismatch)
@@ -319,7 +320,10 @@ const CACHED_RESULTS = {
   },
 }
 
-const CROP_TOP_MODEL_HASH = '31f86df8dc7d'
+// These are the actual checked pre-rendered M / 5'4" catalog files in
+// uploads/pregenerated. Keeping the response pointer in sync avoids a cache
+// hit producing five broken image URLs during the finalist flow.
+const CROP_TOP_MODEL_HASH = '281f01f349dc'
 const CROP_TOP_ANCHOR_HASHES = new Set(['b4c30d47a338', '31f86df8dc7d'])
 const CROP_TOP_VIEWS = ['front', 'back', 'side', 'closeup', 'full']
 
@@ -436,19 +440,38 @@ function firstChunkHash(filePath) {
 }
 
 function getCachedGenerateResult(declaredAttrs, anchorPaths) {
-  const type = String(attributeValue(declaredAttrs?.garment_type)).toLowerCase()
-  const color = String(attributeValue(declaredAttrs?.primary_color)).toLowerCase()
   const size = String(attributeValue(declaredAttrs?.model_size)).trim().toUpperCase()
   const height = String(attributeValue(declaredAttrs?.model_height)).replace(/[^0-9]/g, '')
-  const anchorHashes = (anchorPaths || []).map(firstChunkHash).filter(Boolean)
+  const profileMatch = findEvidenceProfile(anchorPaths)
 
-  const isCropTop = type.includes('crop') || (type.includes('t-shirt') && color.includes('pink'))
-  const isExactDemo = anchorHashes.some(hash => CROP_TOP_ANCHOR_HASHES.has(hash))
+  // The finalist render is intentionally available only for one exact, known
+  // asset set and one pre-rendered configuration. Product text is never a
+  // cache key.
+  if (profileMatch?.matchType !== 'exact' || profileMatch.profile.productId !== 'croptop' || size !== 'M' || height !== '54') return null
 
-  if (!isCropTop || !isExactDemo || size !== 'M' || height !== '54') return null
-
-  console.log('[DEMO REGISTRY] Cached generate match: prod_crop / M / 5\'4"')
-  return JSON.parse(JSON.stringify(CACHED_CROP_TOP_GENERATION))
+  console.log('[DEMO REGISTRY] Cached generate match: exact croptop anchors / M / 5\'4"')
+  const result = JSON.parse(JSON.stringify(CACHED_CROP_TOP_GENERATION))
+  result.cache = {
+    status: 'hit',
+    source: 'pre-rendered-finalist-fixture',
+    variant: 'M / 5\'4"',
+    rendererVersion: 'finalist-pre-render-v1',
+    profileId: profileMatch.profile.productId,
+  }
+  // This imagery is a deliberately pre-rendered finalist fixture. It must
+  // never be presented as a newly synthesized image or a body-fit guarantee.
+  // The hash-bound evidence matrix returned by the route is the only source
+  // of the publish decision.
+  if (result.generatedMetadata) {
+    result.generatedMetadata.size_fit_note = 'This is the selected M / 5\'4" finalist render. Consult the seller size chart for purchase fit.'
+    result.generatedMetadata.verification = {
+      match_status: 'Pre-rendered candidate',
+      source: 'Exact finalist fixture',
+      evidence_scope: 'The evidence matrix below is the source of the listing decision.',
+    }
+  }
+  result.demoNotice = 'Pre-rendered catalog candidate for the exact finalist fixture. Anchor still evaluates its publish evidence live.'
+  return result
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -468,7 +491,10 @@ for (const [productId, attrs] of Object.entries(DEMO_DECLARED_ATTRS)) {
 // ═══════════════════════════════════════════════════════════════════════
 
 export function getDemoCachedResult(declaredAttrs, mode, catalogPaths = [], anchorPaths = []) {
-  if (mode === 'generate') return getCachedGenerateResult(declaredAttrs, anchorPaths)
+  // Verification never receives a registry shortcut. It must use the immutable
+  // evidence profile for the exact uploaded anchors.
+  if (mode !== 'generate') return null
+  return getCachedGenerateResult(declaredAttrs, anchorPaths)
 
   // Extremely robust matching for the pitch demo
   // We prioritize explicit declared attributes from the CSV over filenames.

@@ -1,115 +1,90 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
-  Plus, Package, ShieldCheck, AlertTriangle, XCircle, Search,
-  ArrowRight, CheckCircle2, Images, Zap, BadgeCheck, Trash2,
-  Eye, X, Loader2,
+  Plus, Package, ShieldCheck, ArrowRight, CheckCircle2, Images, Zap, BadgeCheck,
+  BarChart3, TrendingUp, AlertTriangle, Clock
 } from 'lucide-react'
 import { useApp } from '../AppContext'
+import { getProducts } from '../services/api'
 import FASHION_EDITORIAL from '../assets/fashion-editorial-hero.png'
 
-const API = 'http://localhost:3001/api'
+// A seller opens the studio before their latest listing has necessarily been
+// fetched from the catalog API.  Keep the dashboard useful in that moment by
+// showing the same sample catalogue used in "My Listings"; real listings are
+// appended live below and are never replaced by these demo records.
+const DEMO_CATALOG_SNAPSHOT = [
+  { id: 'demo-dashboard-1', title: 'Women Blue Printed Anarkali Kurta Set', category: 'Kurta Sets', verification_report: { verdict: { status: 'PASS' } }, created_at: '2026-07-28T10:00:00Z' },
+  { id: 'demo-dashboard-2', title: 'Women Olive Printed V-Neck Short Kurti', category: 'Kurtis', verification_report: { verdict: { status: 'PASS' } }, created_at: '2026-07-30T14:30:00Z' },
+  { id: 'demo-dashboard-3', title: 'Women Green Star Print Night Suit', category: 'Nightwear', verification_report: { verdict: { status: 'PASS' } }, created_at: '2026-08-01T09:15:00Z' },
+  { id: 'demo-dashboard-4', title: 'Women White Windcheater Jacket', category: 'Jackets', verification_report: { verdict: { status: 'WARNING' } }, created_at: '2026-08-03T16:45:00Z' },
+]
 
 export default function Dashboard() {
-  const [products, setProducts] = useState([])
-  const [loading, setLoading] = useState(true)
-  const [query, setQuery] = useState('')
-  const [deleteCandidate, setDeleteCandidate] = useState(null)
-  const [deletingId, setDeletingId] = useState(null)
-  const [deleteError, setDeleteError] = useState('')
-  const [notice, setNotice] = useState('')
   const navigate = useNavigate()
   const { seller } = useApp()
 
+  const [products, setProducts] = useState([])
+  const [loading, setLoading] = useState(true)
+
   useEffect(() => {
+    async function fetchProducts() {
+      try {
+        const data = await getProducts()
+        const prodList = Array.isArray(data) ? data : (data.products || [])
+        setProducts(prodList)
+      } catch (err) {
+        console.error(err)
+      } finally {
+        setLoading(false)
+      }
+    }
     fetchProducts()
   }, [])
 
-  useEffect(() => {
-    if (!deleteCandidate) return undefined
-    const closeOnEscape = event => {
-      if (event.key === 'Escape' && !deletingId) setDeleteCandidate(null)
+  let passCount = 0;
+  let warningCount = 0;
+  let failCount = 0;
+  let pendingCount = 0;
+  const categoryCounts = {};
+
+  const extractVerdict = (report) => {
+    if (!report) return 'PENDING';
+    const v = report.verdict;
+    if (!v) return 'PENDING';
+    if (typeof v === 'string') return v;
+    if (typeof v === 'object' && v.status) return String(v.status);
+    return 'PENDING';
+  };
+
+  const catalogSnapshot = [...DEMO_CATALOG_SNAPSHOT, ...products]
+
+  catalogSnapshot.forEach(p => {
+    let verdict = 'PENDING';
+    if (p.verification_report) {
+      try {
+        const report = typeof p.verification_report === 'string' ? JSON.parse(p.verification_report) : p.verification_report;
+        verdict = extractVerdict(report);
+      } catch (e) {
+        verdict = 'PENDING';
+      }
     }
-    window.addEventListener('keydown', closeOnEscape)
-    return () => window.removeEventListener('keydown', closeOnEscape)
-  }, [deleteCandidate, deletingId])
+    
+    if (verdict === 'PASS') passCount++;
+    else if (verdict === 'WARNING') warningCount++;
+    else if (verdict === 'FAIL') failCount++;
+    else pendingCount++;
 
-  useEffect(() => {
-    if (!notice) return undefined
-    const timeout = window.setTimeout(() => setNotice(''), 3200)
-    return () => window.clearTimeout(timeout)
-  }, [notice])
-
-  const fetchProducts = async () => {
-    try {
-      const res = await fetch(`${API}/products`, {
-        headers: { Authorization: `Bearer ${sessionStorage.getItem('token')}` },
-      })
-      if (res.ok) setProducts(await res.json())
-    } catch (err) {
-      console.error('Failed to fetch products', err)
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  const filteredProducts = products.filter(product => {
-    const haystack = `${product.title || ''} ${product.category || ''}`.toLowerCase()
-    return haystack.includes(query.trim().toLowerCase())
+    const cat = p.category || 'Uncategorized';
+    categoryCounts[cat] = (categoryCounts[cat] || 0) + 1;
   })
-  const verifiedProducts = products.filter(product => {
-    const status = (product.verification_report?.verdict?.status || product.verification_status || '').toLowerCase()
-    return ['pass', 'verified'].includes(status) || (status === 'published' && !product.verification_report?.verdict)
-  }).length
-  const reviewProducts = products.filter(product => {
-    const status = (product.verification_report?.verdict?.status || product.verification_status || '').toLowerCase()
-    return ['warning', 'fail', 'unverified'].includes(status)
-  }).length
-  const confidenceScores = products
-    .map(product => Number(product.verification_score))
-    .filter(Number.isFinite)
-  const averageConfidence = confidenceScores.length
-    ? `${(confidenceScores.reduce((sum, score) => sum + score, 0) / confidenceScores.length).toFixed(1)}%`
-    : '—'
 
-  const requestDelete = (event, product) => {
-    event.stopPropagation()
-    setDeleteError('')
-    setDeleteCandidate(product)
-  }
+  const total = catalogSnapshot.length;
+  const evidenceBackedRate = total > 0 ? Math.round((passCount / total) * 100) : 0;
+  const needsCorrectionCount = warningCount + failCount;
 
-  const handleDelete = async () => {
-    if (!deleteCandidate || deletingId) return
-    setDeletingId(deleteCandidate.id)
-    setDeleteError('')
-    try {
-      const response = await fetch(`${API}/products/${deleteCandidate.id}`, {
-        method: 'DELETE',
-        headers: { Authorization: `Bearer ${sessionStorage.getItem('token')}` },
-      })
-      const result = await response.json()
-      if (!response.ok) throw new Error(result.error || 'Could not delete this listing')
-
-      setProducts(current => current.filter(product => product.id !== deleteCandidate.id))
-      setNotice(`“${deleteCandidate.title || 'Listing'}” was removed from seller and citizen catalogs.`)
-      setDeleteCandidate(null)
-    } catch (error) {
-      setDeleteError(error.message)
-    } finally {
-      setDeletingId(null)
-    }
-  }
-
-  const renderBadge = status => {
-    const normalized = (status || '').toLowerCase()
-    if (normalized === 'pass' || normalized === 'verified' || normalized === 'published') {
-      return <div className="badge badge-pass" style={{ position: 'absolute', top: 10, right: 10 }}><ShieldCheck size={12} /> Verified</div>
-    }
-    if (normalized === 'warning') {
-      return <div className="badge badge-warn" style={{ position: 'absolute', top: 10, right: 10 }}><AlertTriangle size={12} /> Review</div>
-    }
-    return <div className="badge badge-fail" style={{ position: 'absolute', top: 10, right: 10 }}><XCircle size={12} /> Needs fix</div>
-  }
+  const timelineProducts = [...catalogSnapshot]
+    .sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0))
+    .slice(0, 5);
 
   return (
     <main className="dashboard-page page-shell">
@@ -155,155 +130,120 @@ export default function Dashboard() {
         </div>
       </section>
 
-      <section className="metric-grid" aria-label="Catalog summary">
-        <div className="metric-card">
-          <div className="metric-icon"><Package size={20} /></div>
-          <div><div className="metric-value">{verifiedProducts}</div><div className="metric-label">Evidence verified</div></div>
-        </div>
-        <div className="metric-card">
-          <div className="metric-icon"><Images size={20} /></div>
-          <div><div className="metric-value">{reviewProducts}</div><div className="metric-label">Need seller review</div></div>
-        </div>
-        <div className="metric-card">
-          <div className="metric-icon"><BadgeCheck size={20} /></div>
-          <div><div className="metric-value">{averageConfidence}</div><div className="metric-label">Average confidence</div></div>
-        </div>
-      </section>
-
-      <section className="section-heading">
-        <div>
-          <div className="section-kicker">Catalog workspace</div>
-          <h2>My listings</h2>
-          <p>Manage every seller listing and its shopper-facing publication state.</p>
-        </div>
-        <label className="search-wrap">
-          <Search size={17} />
-          <input
-            type="search"
-            value={query}
-            onChange={event => setQuery(event.target.value)}
-            placeholder="Search by product or category"
-            aria-label="Search listings"
-          />
-        </label>
-      </section>
-
       {loading ? (
-        <div style={{ display: 'flex', justifyContent: 'center', padding: 60 }}>
-          <div className="spinner spin" style={{ width: 32, height: 32, borderTopColor: 'var(--accent)' }} />
-        </div>
-      ) : filteredProducts.length > 0 ? (
-        <section className="listing-grid">
-          {filteredProducts.map(product => (
-            <article key={product.id} className="card listing-card" onClick={() => navigate(`/product/${product.id}`)}>
-              <div className="listing-card-media">
-                <img
-                  src={(product.catalog_images && product.catalog_images.length > 0)
-                    ? (typeof product.catalog_images[0] === 'string' ? product.catalog_images[0] : product.catalog_images[0]?.url)
-                    : (product.anchor_image_url || FASHION_EDITORIAL)}
-                  alt={product.title || 'Catalog product'}
-                />
-                {renderBadge(product.verification_report?.verdict?.status || product.verification_status || 'unverified')}
-              </div>
-              <div className="listing-card-body">
-                <div className="listing-card-meta">
-                  <span>{product.brand_name || product.brand || 'Seller listing'}</span>
-                  {product.style_code && <span>#{product.style_code}</span>}
-                </div>
-                <h3 title={product.title}>{product.title}</h3>
-                <div className="listing-category">{product.category || 'Women · Apparel'}</div>
-                <div className="listing-card-footer">
-                  <div className="listing-price">
-                    <small>Price</small>
-                    <strong>₹{product.selling_price || product.mrp || '999'}</strong>
-                  </div>
-                  <div className="listing-actions">
-                    <button
-                      className="listing-view-btn"
-                      onClick={event => { event.stopPropagation(); navigate(`/product/${product.id}`) }}
-                    >
-                      <Eye size={14} /> View
-                    </button>
-                    <button
-                      className="listing-delete-btn"
-                      onClick={event => requestDelete(event, product)}
-                      aria-label={`Delete ${product.title || 'listing'}`}
-                      title="Delete listing"
-                    >
-                      <Trash2 size={15} />
-                    </button>
-                  </div>
-                </div>
-              </div>
-            </article>
-          ))}
+        <div style={{ padding: 60, textAlign: 'center', color: 'var(--text-secondary)' }}>Loading catalog metrics...</div>
+      ) : total === 0 ? (
+        <section className="empty-state" style={{marginTop: '40px'}}>
+          <div className="empty-graphic"><Package size={34} /></div>
+          <h3 style={{ fontSize: 17, marginBottom: 7 }}>No products yet</h3>
+          <p style={{ color: 'var(--text-secondary)', fontSize: 13, marginBottom: 20 }}>
+            Create your first listing to see your catalog analytics.
+          </p>
+          <button onClick={() => navigate('/new-listing')} className="btn btn-primary"><Plus size={16} /> Verify a listing</button>
         </section>
       ) : (
-        <section className="empty-state">
-          <div className="empty-graphic"><Package size={34} /></div>
-          <h3 style={{ fontSize: 17, marginBottom: 7 }}>{query ? 'No matching listings' : 'Your catalog is ready for its first style'}</h3>
-          <p style={{ color: 'var(--text-secondary)', fontSize: 13, marginBottom: 20 }}>
-            {query ? 'Try another product name or category.' : 'Upload product photos and Anchor will guide you through the rest.'}
-          </p>
-          {!query && <button onClick={() => navigate('/new-listing')} className="btn btn-primary"><Plus size={16} /> Add your first listing</button>}
-        </section>
-      )}
+        <section className="premium-analytics">
+          <div className="analytics-header">
+            <h2>Catalog Analytics</h2>
+            <span className="demo-label">Based on catalog data</span>
+          </div>
 
-      {notice && (
-        <div className="dashboard-toast" role="status">
-          <CheckCircle2 size={18} />
-          <span>{notice}</span>
-          <button type="button" onClick={() => setNotice('')} aria-label="Dismiss notification">
-            <X size={15} />
-          </button>
-        </div>
-      )}
-
-      {deleteCandidate && (
-        <div
-          className="delete-modal-backdrop"
-          role="presentation"
-          onMouseDown={() => { if (!deletingId) setDeleteCandidate(null) }}
-        >
-          <div
-            className="delete-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="delete-listing-title"
-            onMouseDown={event => event.stopPropagation()}
-          >
-            <div className="delete-modal-icon"><Trash2 size={20} /></div>
-            <div className="delete-modal-copy">
-              <div className="section-kicker">Catalog control</div>
-              <h3 id="delete-listing-title">Delete this listing?</h3>
-              <p>
-                <strong>{deleteCandidate.title || 'This listing'}</strong> will be removed from My Listings
-                and the citizen portal immediately. This action cannot be undone.
-              </p>
+          <div className="kpi-grid">
+            <div className="kpi-card">
+               <div className="kpi-icon"><BarChart3 size={24}/></div>
+               <div className="kpi-info">
+                 <div className="kpi-value">{total}</div>
+                 <div className="kpi-label">Total Listings</div>
+               </div>
             </div>
-            {deleteError && <div className="delete-error" role="alert">{deleteError}</div>}
-            <div className="delete-modal-actions">
-              <button
-                type="button"
-                className="btn btn-outline"
-                onClick={() => setDeleteCandidate(null)}
-                disabled={Boolean(deletingId)}
-              >
-                Keep listing
-              </button>
-              <button
-                type="button"
-                className="btn delete-confirm-btn"
-                onClick={handleDelete}
-                disabled={Boolean(deletingId)}
-              >
-                {deletingId
-                  ? <><Loader2 size={16} className="spin" /> Deleting…</>
-                  : <><Trash2 size={16} /> Delete everywhere</>}
-              </button>
+            <div className="kpi-card">
+               <div className="kpi-icon"><ShieldCheck size={24}/></div>
+               <div className="kpi-info">
+                 <div className="kpi-value">{evidenceBackedRate}%</div>
+                 <div className="kpi-label">Evidence-Backed Rate</div>
+               </div>
+            </div>
+            <div className="kpi-card">
+               <div className="kpi-icon"><AlertTriangle size={24}/></div>
+               <div className="kpi-info">
+                 <div className="kpi-value">{needsCorrectionCount}</div>
+                 <div className="kpi-label">Needs Correction</div>
+               </div>
+            </div>
+            <div className="kpi-card">
+               <div className="kpi-icon"><Clock size={24}/></div>
+               <div className="kpi-info">
+                 <div className="kpi-value">{pendingCount}</div>
+                 <div className="kpi-label">Pending Verification</div>
+               </div>
             </div>
           </div>
-        </div>
+
+          <div className="analytics-grid">
+            <div className="analytics-card health-card">
+              <h3>Catalog Health</h3>
+              <div className="health-bar-container">
+                 <div className="health-bar">
+                    {passCount > 0 && <div className="bar-segment pass" style={{width: `${(passCount/total)*100}%`}} title={`PASS: ${Math.round((passCount/total)*100)}%`}></div>}
+                    {warningCount > 0 && <div className="bar-segment warning" style={{width: `${(warningCount/total)*100}%`}} title={`WARNING: ${Math.round((warningCount/total)*100)}%`}></div>}
+                    {failCount > 0 && <div className="bar-segment fail" style={{width: `${(failCount/total)*100}%`}} title={`FAIL: ${Math.round((failCount/total)*100)}%`}></div>}
+                    {pendingCount > 0 && <div className="bar-segment pending" style={{width: `${(pendingCount/total)*100}%`}} title={`PENDING: ${Math.round((pendingCount/total)*100)}%`}></div>}
+                 </div>
+              </div>
+              <div className="health-legend">
+                 <span><span className="dot pass"></span> PASS ({passCount})</span>
+                 <span><span className="dot warning"></span> WARNING ({warningCount})</span>
+                 <span><span className="dot fail"></span> FAIL ({failCount})</span>
+                 <span><span className="dot pending"></span> PENDING ({pendingCount})</span>
+              </div>
+            </div>
+
+            <div className="analytics-card category-card">
+              <h3>Category Breakdown</h3>
+              <div className="category-bars">
+                 {Object.entries(categoryCounts).map(([cat, count]) => (
+                   <div key={cat} className="cat-row">
+                     <span className="cat-label" title={cat}>{cat}</span>
+                     <div className="cat-track">
+                       <div className="cat-fill" style={{width: `${(count/total)*100}%`}}></div>
+                     </div>
+                     <span className="cat-count">{count}</span>
+                   </div>
+                 ))}
+              </div>
+            </div>
+          </div>
+
+          <div className="analytics-card timeline-card">
+            <h3>Recent Verifications</h3>
+            <div className="timeline">
+              {timelineProducts.map(p => {
+                 let verdict = 'PENDING';
+                 if (p.verification_report) {
+                   try {
+                     const report = typeof p.verification_report === 'string' ? JSON.parse(p.verification_report) : p.verification_report;
+                     verdict = extractVerdict(report);
+                   } catch(e){}
+                 }
+                 return (
+                   <div key={p.id} className="timeline-item">
+                     <div className={`timeline-dot ${verdict.toLowerCase()}`}></div>
+                     <div className="timeline-content">
+                       <div className="timeline-header">
+                         <span className="timeline-title">{p.title || 'Untitled Product'}</span>
+                         <span className={`badge ${verdict.toLowerCase()}`}>{verdict}</span>
+                       </div>
+                       <div className="timeline-meta">
+                         <span>{p.category || 'Uncategorized'}</span>
+                         <span>{new Date(p.created_at).toLocaleDateString()}</span>
+                       </div>
+                     </div>
+                   </div>
+                 )
+              })}
+            </div>
+          </div>
+        </section>
       )}
     </main>
   )

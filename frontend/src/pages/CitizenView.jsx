@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Search, ShoppingBag, Heart, User, ShieldCheck, ChevronRight } from 'lucide-react';
 
@@ -152,7 +152,7 @@ export default function CitizenView() {
         <main style={{ flex: 1 }}>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(210px, 1fr))', gap: '30px 20px' }}>
             {products.map((product) => {
-              const generated = product.verification_status === 'generated';
+              const generated = Boolean(product.ai_model_images?.length) || product.verification_status === 'generated';
               const evidenceStatus = (
                 product.verification_report?.verdict?.status ||
                 product.verification_status ||
@@ -185,6 +185,11 @@ export default function CitizenView() {
                   onClick={() => navigate(`/product/${product.id}`)}
                 >
                   <div style={{ position: 'relative', aspectRatio: '3/4', overflow: 'hidden', backgroundColor: '#f5f5f6', marginBottom: 12 }}>
+                    {generated && (
+                      <div className="ai-generated-badge">
+                        AI-generated catalog image
+                      </div>
+                    )}
                     {imageUrl ? (
                       <img src={imageUrl} alt={product.title} style={{ width: '100%', height: '100%', objectFit: 'contain', background: '#fff' }} />
                     ) : (
@@ -232,6 +237,11 @@ export default function CitizenView() {
                       <div style={{ display: 'inline-flex', alignItems: 'center', gap: 4, background: '#e6f6f2', padding: '2px 6px', borderRadius: 2 }}>
                         <ShieldCheck size={12} color="#03a685" />
                         <span style={{ fontSize: 11, fontWeight: 700, color: '#03a685' }}>Anchor Verified ✓</span>
+                      </div>
+                    )}
+                    {generated && (
+                      <div style={{ marginTop: 7, fontSize: 11, lineHeight: 1.35, color: '#6b4fc4' }}>
+                        Styled catalog image created with AI. Product claims are disclosed separately.
                       </div>
                     )}
                     {needsReview && (

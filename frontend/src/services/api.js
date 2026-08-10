@@ -144,6 +144,25 @@ export async function downloadCSVStage(sessionId, stage) {
   )
 }
 
+// ─── Re-check (deterministic re-verification against evidence) ───────
+
+/** Re-check edited seller claims against immutable evidence profile */
+export async function recheckVerification({ editedClaims, profileId, sizeChart, evidenceBinding, verificationMode = 'csv' }) {
+  return post('/verify/recheck', { editedClaims, profileId, sizeChart, evidenceBinding, verificationMode })
+}
+
+// ─── Products ────────────────────────────────────────────────────────
+
+/** Get all products (for seller dashboard / listings) */
+export async function getProducts() {
+  return get('/products/all')
+}
+
+/** Get a single product by ID */
+export async function getProduct(id) {
+  return get(`/products/${id}`)
+}
+
 // ─── Health ──────────────────────────────────────────────────────────
 
 export async function checkHealth() {

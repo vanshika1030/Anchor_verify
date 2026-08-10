@@ -1,0 +1,3694 @@
+From faa94d3740a1af56e19b587a9df851c0418e0b2b Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sun, 9 Aug 2026 19:09:02 +0000
+Subject: [PATCH 1/3] Fix verification pipeline reliability and remove
+ fabricated evidence
+
+Nine defects found by reading and running the pipeline, grouped by what
+they affected.
+
+Silent failure of the ML worker
+- /api/health returned a static "ok" no matter what was running, including
+  the failure that broke verification most often: the Python worker not
+  being started. It now probes the database and the worker and returns 503
+  when a decision-critical dependency is down. Missing LLM keys never fail
+  the check, since Layer 5 is enhancement-only.
+- Added a /health route to ai_server.py reporting per-model load state.
+  FastAPI serves /openapi.json regardless, so the old reachability probe
+  treated a worker with no models loaded as healthy.
+- Added a boot-time self-check so a missing worker is visible at startup.
+- Centralised every ML call in services/ml_client.js: one configurable base
+  URL, explicit IPv4 loopback (localhost resolves to ::1 first on many
+  machines while uvicorn binds IPv4, surfacing as "fetch failed"), and
+  timeouts on every request so a hung worker cannot hold Express open.
+- Documented the worker as a required startup step in the README, which
+  previously omitted it entirely.
+
+Fabricated or discarded evidence
+- checkModelProportions overwrote the detected model height with a
+  hardcoded "tall (5'8+)" for kurtis and dresses, then compared the seller's
+  declaration against that invented value and returned it to the UI as
+  "detected". Removed; it also mutated the caller's object.
+- Layer 4 was skipped entirely whenever CLIP was unavailable, discarding
+  valid pHash and attribute evidence and reporting no score. Fusion now runs
+  on whatever signals exist and reports confidence_tier, signals_used and
+  signals_missing; a prior-only result is suppressed rather than shown as a
+  measurement.
+- The UI added 15 percentage points per "resolved" row directly to the
+  Bayesian posterior. Because probability arrives as a string it was doing
+  string concatenation, so the number shown was neither the model's nor the
+  intended boost. Removed in favour of a re-check prompt.
+- The UI rendered an unobserved likelihood ratio as "0.00", which reads as
+  overwhelming evidence against a match rather than "not measured".
+
+Checks that silently did not run
+- analyzeCatalogGeometry keyed the garment mask off a 10-entry hue table,
+  so it returned null for every black, white, grey, beige, cream or brown
+  garment and skipped the Layer 3.7 length check on a large share of real
+  listings. It now falls back to a dominant-foreground-colour mask, reports
+  mask_source and mask_confidence, and downgrades low-confidence length
+  findings to warnings so a noisier mask cannot block publication.
+- CANONICAL_MAP declared 'cap sleeve' twice; the later entry won, so a cap
+  sleeve could never match a short-sleeve observation. Also removed a
+  duplicate bare 'long' and added full/long as a soft equivalence.
+
+Untrusted input reaching the network and filesystem
+- materializeCatalogReferences fetched any seller-supplied URL, including
+  cloud metadata and private ranges. Private, loopback, link-local and
+  multicast destinations are now refused.
+- Its relative-path fallback resolved any client string against the process
+  CWD, accepting ../../../../etc/passwd as a catalog image. Local reads are
+  now confined to the allowed asset roots.
+- A request whose references were all rejected returned a generic "upload
+  catalog images" error; it now says which reference failed and why.
+
+Other
+- enhanceMetadataWithVision uploaded every anchor as image/jpeg, so PNG
+  anchors were rejected or mis-decoded. MIME type now comes from the file.
+- test_e2e.js did not load dotenv, so it signed evidence bindings with the
+  fallback secret while the server used .env, failing every recheck test.
+  Its health assertion hardcoded 200, which would have passed in exactly the
+  situation the check exists to catch; it now asserts the response shape and
+  that the status agrees with the underlying checks.
+
+Verified: test_e2e.js 21/21, test_evidence.js passing, frontend builds,
+striped-dress fixture still blocks on catalog visual mismatch, SSRF and
+traversal payloads refused, worker-down path returns a specific
+EVIDENCE_PENDING reason.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_013dH2GRLbUQX4E4mnweV9Bn
+---
+ README.md                     |  24 ++-
+ backend/.env.example          |  11 ++
+ backend/evidence_profile.js   |  12 +-
+ backend/routes/verify.js      | 288 +++++++++++++++++++++++++++-------
+ backend/server.js             |  76 ++++++++-
+ backend/services/ai_server.py |  28 ++++
+ backend/services/fusion.js    |  32 ++++
+ backend/services/gemini.js    | 120 +++++---------
+ backend/services/ml_client.js | 108 +++++++++++++
+ backend/test_e2e.js           |  22 ++-
+ frontend/src/index.css        |   1 +
+ frontend/src/pages/Verify.jsx |  51 ++++--
+ 12 files changed, 619 insertions(+), 154 deletions(-)
+ create mode 100644 backend/services/ml_client.js
+
+diff --git a/README.md b/README.md
+index 5d924bd..8f6bccf 100644
+--- a/README.md
++++ b/README.md
+@@ -105,19 +105,36 @@ Node.js ≥ 18 · Python ≥ 3.10 · GPU recommended (CPU works, slower)
+ ```bash
+ git clone https://github.com/your-org/anchor.git && cd anchor
+ 
+-# Backend (Terminal 1)
++# Backend API (Terminal 1)
+ cd backend
+ npm install
+ pip install -r requirements.txt
+ cp .env.example .env       # Add API keys
+ npm run dev                 # → http://localhost:3001
+ 
+-# Frontend (Terminal 2)
++# Local ML worker (Terminal 2) — REQUIRED for verification
++# Layers 1 through 3.7 all call this process. It is separate from the Node API
++# and does not start with it; without it, verification of new anchors returns
++# EVIDENCE_PENDING.
++cd backend
++python services/ai_server.py   # → http://127.0.0.1:8100
++
++# Frontend (Terminal 3)
+ cd frontend
+ npm install
+ npm run dev                 # → http://localhost:5173
+ ```
+ 
++### Checking that everything is actually up
++```bash
++curl http://localhost:3001/api/health
++```
++Returns `200` with `"status": "ok"` when the database and the ML worker (CLIP +
++ViT loaded) are both healthy, and `503` with `"status": "unhealthy"` when a
++decision-critical dependency is down. The Node backend also prints the worker's
++state at startup. Missing LLM keys never fail the check — they only affect
++Layer 5 listing text.
++
+ ### Demo Credentials
+ | Email | Password |
+ |---|---|
+@@ -127,6 +144,9 @@ npm run dev                 # → http://localhost:5173
+ | Variable | Required | Purpose |
+ |---|---|---|
+ | `PORT` | Optional | Backend port; defaults to `3001` |
++| `ANCHOR_ML_URL` | Optional | Local ML worker base URL; defaults to `http://127.0.0.1:8100`. Use an explicit IPv4 address — `localhost` resolves to `::1` first on many machines while uvicorn binds IPv4, which surfaces as `fetch failed` |
++| `ANCHOR_ML_TIMEOUT_MS` | Optional | Per-inference timeout for ML calls; defaults to `30000` |
++| `ANCHOR_ML_HEALTH_TIMEOUT_MS` | Optional | Timeout for the worker health probe; defaults to `2000` |
+ | `JWT_SECRET` | Required in production | Signs seller authentication tokens |
+ | `EVIDENCE_BINDING_SECRET` | Required in production | Cryptographically binds evidence to its anchor images |
+ | `GROQ_API_KEY` | Recommended | Llama 3.3 70B text generation (Layer 5) |
+diff --git a/backend/.env.example b/backend/.env.example
+index aef7331..d0aa546 100644
+--- a/backend/.env.example
++++ b/backend/.env.example
+@@ -8,6 +8,17 @@ JWT_SECRET=replace-with-a-long-random-secret
+ # Use a long, unique value outside local demos.
+ EVIDENCE_BINDING_SECRET=replace-with-a-long-random-secret
+ 
++# ─── Local ML worker (ai_server.py — Layers 1 through 3.7) ──────────
++# Start it separately:  python services/ai_server.py
++#
++# Use an explicit IPv4 loopback address. "localhost" resolves to ::1 first on
++# many machines while uvicorn binds IPv4, which surfaces as "fetch failed" even
++# with the worker running.
++ANCHOR_ML_URL=http://127.0.0.1:8100
++# Per-inference timeout, and the timeout for the /health probe.
++ANCHOR_ML_TIMEOUT_MS=30000
++ANCHOR_ML_HEALTH_TIMEOUT_MS=2000
++
+ # ─── Groq API (Primary LLM — Layer 5 text generation) ───────────────
+ # Get your key at: https://console.groq.com/keys
+ # Model used: llama-3.3-70b-versatile
+diff --git a/backend/evidence_profile.js b/backend/evidence_profile.js
+index 5f540e8..eded74e 100644
+--- a/backend/evidence_profile.js
++++ b/backend/evidence_profile.js
+@@ -161,10 +161,15 @@ const CANONICAL_MAP = {
+   'three quarter': 'three-quarter', 'three-quarter': 'three-quarter', '3/4 sleeve': 'three-quarter',
+   'three-quarter sleeve': 'three-quarter', 'three quarter sleeve': 'three-quarter',
+   'short sleeve': 'short', 'short': 'short', 'half sleeve': 'short', 'cap sleeve': 'short',
+-  'full sleeve': 'full', 'full': 'full', 'long sleeve': 'full', 'long': 'full',
++  'full sleeve': 'full', 'full': 'full', 'long sleeve': 'full',
+   'sleeveless': 'sleeveless', 'no sleeve': 'sleeveless', 'strappy': 'sleeveless', 'spaghetti': 'sleeveless',
+-  'cap sleeve': 'cap',
+-  
++  // NOTE: 'cap sleeve' -> 'cap' used to be redeclared here, silently overriding
++  // the 'cap sleeve' -> 'short' entry above (last key wins in an object
++  // literal), so a cap sleeve could never match a short-sleeve observation.
++  // NOTE: bare 'long' is deliberately NOT mapped here — the length section
++  // below owns it. It was previously declared in both sections, and the length
++  // entry won anyway, so the sleeve mapping never took effect.
++
+   // Neckline
+   'round neck': 'round', 'round': 'round', 'crew neck': 'round', 'crew': 'round',
+   'v-neck': 'v-neck', 'v neck': 'v-neck', 'v': 'v-neck',
+@@ -247,6 +252,7 @@ const SOFT_EQUIVALENCES = [
+   ['slim', 'regular'],            // Slim and Regular are close enough for listing quality
+   ['round', 'v-neck'],            // Minor neckline variations
+   ['crop-top', 'tshirt'],         // Crop top is a sub-type of t-shirt
++  ['full', 'long'],               // "Long Sleeve" and "Full Sleeve" are the same claim
+ ];
+ 
+ /**
+diff --git a/backend/routes/verify.js b/backend/routes/verify.js
+index de7a19f..a2398f6 100644
+--- a/backend/routes/verify.js
++++ b/backend/routes/verify.js
+@@ -17,6 +17,7 @@ import {
+   enhanceMetadataWithVision
+ } from '../services/gemini.js'
+ import { calculateBayesianFusion } from '../services/fusion.js'
++import { getMlServiceHealth } from '../services/ml_client.js'
+ import { getDemoCachedResult } from '../demo_registry.js'
+ import {
+   findEvidenceProfile,
+@@ -411,17 +412,19 @@ function buildPendingResponse({ mode, reason, catalogEvidenceDiagnostics = [] })
+   }
+ }
+ 
+-async function isLocalVisionServiceAvailable() {
+-  const controller = new AbortController()
+-  const timeout = setTimeout(() => controller.abort(), 800)
+-  try {
+-    const response = await fetch('http://127.0.0.1:8100/openapi.json', { signal: controller.signal })
+-    return response.ok
+-  } catch {
+-    return false
+-  } finally {
+-    clearTimeout(timeout)
+-  }
++/**
++ * The old probe hit /openapi.json, which FastAPI serves even when CLIP and the
++ * ViT failed to load. A worker with no models therefore looked available, every
++ * layer returned nothing, and the pipeline reported an empty result instead of
++ * an honest pending state. Now we require CLIP specifically, since Layers 1,
++ * 3.5 and 3.6 are all CLIP-backed.
++ */
++async function getVisionServiceStatus() {
++  const health = await getMlServiceHealth()
++  // clip_loaded === null means an older worker without /health: reachability is
++  // all we can establish, so we accept it rather than blocking the pipeline.
++  const usable = health.reachable && health.clip_loaded !== false
++  return { ...health, usable }
+ }
+ 
+ const attributeValue = value => (
+@@ -478,10 +481,22 @@ function csvDocumentaryEvidenceRequirements(declaredAttrs = {}) {
+ }
+ 
+ const COLOR_HUES = {
+-  red: 0, maroon: 350, orange: 28, yellow: 55, green: 120,
+-  teal: 175, blue: 210, navy: 225, purple: 275, pink: 335,
++  red: 0, maroon: 350, orange: 28, coral: 15, yellow: 55, mustard: 45,
++  gold: 48, olive: 80, green: 120, sage: 110, teal: 175, turquoise: 178,
++  cyan: 185, blue: 210, navy: 225, purple: 275, lavender: 270,
++  violet: 280, magenta: 305, pink: 335, rose: 340, peach: 20,
+ }
+ 
++// Achromatic and near-achromatic colours have no usable hue. Naming them
++// explicitly matters: the hue path used to be the ONLY way the garment mask
++// was built, so every black, white, grey, beige, cream or brown garment made
++// analyzeCatalogGeometry return null and silently skipped the Layer 3.7 length
++// check — on a large share of real listings.
++const ACHROMATIC_COLORS = new Set([
++  'black', 'white', 'off-white', 'offwhite', 'ivory', 'cream', 'grey', 'gray',
++  'charcoal', 'silver', 'beige', 'tan', 'khaki', 'brown', 'nude', 'stone',
++])
++
+ function rgbToHsv(r, g, b) {
+   const red = r / 255
+   const green = g / 255
+@@ -535,6 +550,12 @@ export async function analyzeCatalogGeometry(imagePath, declaredColor = '') {
+     const normalizedColor = String(declaredColor || '').toLowerCase()
+     const colorName = Object.keys(COLOR_HUES).find(name => normalizedColor.includes(name))
+     const targetHue = colorName ? COLOR_HUES[colorName] : null
++    // No hue anchor (achromatic colour, an unrecognised colour name, or no
++    // declared colour at all) means we fall back to the background-subtracted
++    // foreground mask for the garment extent. Less selective than hue matching,
++    // but it lets the length measurement run instead of returning null.
++    const useDominantColorMask = targetHue == null
++    const isAchromatic = [...ACHROMATIC_COLORS].some(name => normalizedColor.includes(name))
+     const foregroundRows = new Array(height).fill(0)
+     const garmentRows = new Array(height).fill(0)
+     let textureSamples = 0
+@@ -542,6 +563,17 @@ export async function analyzeCatalogGeometry(imagePath, declaredColor = '') {
+     const startX = Math.round(width * 0.10)
+     const endX = Math.round(width * 0.90)
+ 
++    // Pass 1: separate foreground from background, and — when there is no hue to
++    // key on — build a coarse colour histogram of the foreground so we can find
++    // the garment's dominant colour. Using the foreground mask itself as the
++    // garment mask is not an option: it makes garmentBottom equal bodyBottom by
++    // construction, so every measurement comes out as hem = 1.0 (Ankle Length).
++    const COLOR_BUCKET = 32
++    const bucketsPerAxis = Math.ceil(256 / COLOR_BUCKET)
++    const colorHistogram = useDominantColorMask
++      ? new Uint32Array(bucketsPerAxis ** 3)
++      : null
++
+     for (let y = 0; y < height; y += 2) {
+       for (let x = startX; x < endX; x += 2) {
+         const index = (y * width + x) * channels
+@@ -549,29 +581,84 @@ export async function analyzeCatalogGeometry(imagePath, declaredColor = '') {
+         const g = data[index + 1]
+         const b = data[index + 2]
+         const distance = Math.hypot(r - bgR, g - bgG, b - bgB)
+-        if (distance > 24) foregroundRows[y]++
++        const isForeground = distance > 24
++        if (!isForeground) continue
++        foregroundRows[y]++
++
++        if (colorHistogram) {
++          const bucket =
++            Math.floor(r / COLOR_BUCKET) * bucketsPerAxis * bucketsPerAxis +
++            Math.floor(g / COLOR_BUCKET) * bucketsPerAxis +
++            Math.floor(b / COLOR_BUCKET)
++          colorHistogram[bucket]++
++        }
++      }
++    }
++
++    // Resolve the dominant foreground colour from the histogram's modal bucket.
++    let dominantColor = null
++    if (colorHistogram) {
++      let bestBucket = -1
++      let bestCount = 0
++      for (let i = 0; i < colorHistogram.length; i++) {
++        if (colorHistogram[i] > bestCount) {
++          bestCount = colorHistogram[i]
++          bestBucket = i
++        }
++      }
++      if (bestBucket >= 0) {
++        const rBucket = Math.floor(bestBucket / (bucketsPerAxis * bucketsPerAxis))
++        const gBucket = Math.floor(bestBucket / bucketsPerAxis) % bucketsPerAxis
++        const bBucket = bestBucket % bucketsPerAxis
++        const centre = COLOR_BUCKET / 2
++        dominantColor = {
++          r: rBucket * COLOR_BUCKET + centre,
++          g: gBucket * COLOR_BUCKET + centre,
++          b: bBucket * COLOR_BUCKET + centre,
++        }
++      }
++    }
++    if (useDominantColorMask && !dominantColor) return null
++
++    // Pass 2: build the garment mask — by hue when a declared colour resolved to
++    // one, otherwise by proximity to the dominant foreground colour. Both are
++    // narrower than the body mask, which is what makes the hem measurable.
++    const DOMINANT_TOLERANCE = 70
++    for (let y = 0; y < height; y += 2) {
++      for (let x = startX; x < endX; x += 2) {
++        const index = (y * width + x) * channels
++        const r = data[index]
++        const g = data[index + 1]
++        const b = data[index + 2]
+ 
+-        if (targetHue != null) {
++        let isGarmentPixel
++        if (useDominantColorMask) {
++          isGarmentPixel =
++            Math.hypot(r - bgR, g - bgG, b - bgB) > 24 &&
++            Math.hypot(r - dominantColor.r, g - dominantColor.g, b - dominantColor.b) < DOMINANT_TOLERANCE
++        } else {
+           const hsv = rgbToHsv(r, g, b)
+           const hueDistance = Math.min(
+             Math.abs(hsv.hue - targetHue),
+             360 - Math.abs(hsv.hue - targetHue)
+           )
+-          if (hsv.saturation > 0.10 && hsv.value > 0.20 && hueDistance < 38) {
+-            garmentRows[y]++
+-            if (x + 2 < endX && y + 2 < height) {
+-              const rightIndex = index + (2 * channels)
+-              const belowIndex = index + (2 * width * channels)
+-              const brightness = (r + g + b) / 3
+-              const rightBrightness = (data[rightIndex] + data[rightIndex + 1] + data[rightIndex + 2]) / 3
+-              const belowBrightness = (data[belowIndex] + data[belowIndex + 1] + data[belowIndex + 2]) / 3
+-              textureSamples++
+-              if (Math.max(
+-                Math.abs(brightness - rightBrightness),
+-                Math.abs(brightness - belowBrightness)
+-              ) > 18) {
+-                textureEdges++
+-              }
++          isGarmentPixel = hsv.saturation > 0.10 && hsv.value > 0.20 && hueDistance < 38
++        }
++
++        if (isGarmentPixel) {
++          garmentRows[y]++
++          if (x + 2 < endX && y + 2 < height) {
++            const rightIndex = index + (2 * channels)
++            const belowIndex = index + (2 * width * channels)
++            const brightness = (r + g + b) / 3
++            const rightBrightness = (data[rightIndex] + data[rightIndex + 1] + data[rightIndex + 2]) / 3
++            const belowBrightness = (data[belowIndex] + data[belowIndex + 1] + data[belowIndex + 2]) / 3
++            textureSamples++
++            if (Math.max(
++              Math.abs(brightness - rightBrightness),
++              Math.abs(brightness - belowBrightness)
++            ) > 18) {
++              textureEdges++
+             }
+           }
+         }
+@@ -626,6 +713,11 @@ export async function analyzeCatalogGeometry(imagePath, declaredColor = '') {
+     return {
+       length_category: lengthCategory,
+       normalized_hem: Number(normalizedHem.toFixed(3)),
++      // How the garment mask was built. Dominant-colour masking is less precise
++      // than hue matching against a declared colour, so a reviewer needs to see
++      // which one produced the measurement.
++      mask_source: useDominantColorMask ? 'dominant-foreground-colour' : `hue-match:${colorName}`,
++      mask_confidence: useDominantColorMask ? (isAchromatic ? 'MEDIUM' : 'LOW') : 'MEDIUM',
+       model_build: build,
+       build_ratio: Number(buildRatio.toFixed(3)),
+       texture_density: textureSamples
+@@ -639,6 +731,44 @@ export async function analyzeCatalogGeometry(imagePath, declaredColor = '') {
+   }
+ }
+ 
++// Catalog references are seller-supplied strings that this server then fetches,
++// so they are a server-side request forgery vector: without this check a
++// reference like http://169.254.169.254/... or http://10.0.0.5/ would make
++// Anchor fetch internal infrastructure on the submitter's behalf.
++function isBlockedHost(hostname) {
++  const host = String(hostname || '').toLowerCase().replace(/^\[|\]$/g, '')
++  if (!host) return true
++  if (host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.internal') || host.endsWith('.local')) return true
++  if (host === '::1' || host === '::' || host.startsWith('fe80:') || host.startsWith('fc') || host.startsWith('fd')) return true
++
++  const ipv4 = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/)
++  if (ipv4) {
++    const [a, b] = ipv4.slice(1).map(Number)
++    if (a === 127 || a === 0 || a === 10) return true          // loopback / this-host / private
++    if (a === 169 && b === 254) return true                     // link-local, incl. cloud metadata
++    if (a === 172 && b >= 16 && b <= 31) return true            // private
++    if (a === 192 && b === 168) return true                     // private
++    if (a === 100 && b >= 64 && b <= 127) return true           // carrier-grade NAT
++    if (a >= 224) return true                                   // multicast / reserved
++  }
++  return false
++}
++
++// Only these roots may be read from disk. Without this, the relative-path
++// fallback below resolved any client string against the process CWD, so
++// "../../../../etc/passwd" was accepted as a catalog image.
++const LOCAL_REFERENCE_ROOTS = [
++  uploadsRoot,
++  path.resolve(process.cwd(), '..', 'demo_data'),
++  path.resolve(process.cwd(), 'pregenerated'),
++  path.resolve(process.cwd(), 'outputs'),
++]
++
++function isPathInsideAllowedRoot(candidate) {
++  const resolved = path.resolve(candidate)
++  return LOCAL_REFERENCE_ROOTS.some(root => resolved === root || resolved.startsWith(root + path.sep))
++}
++
+ async function materializeCatalogReferences(references = []) {
+   const diagnostics = []
+   const paths = []
+@@ -649,10 +779,15 @@ async function materializeCatalogReferences(references = []) {
+ 
+     try {
+       const parsed = new URL(value)
+-      if (['localhost', '127.0.0.1'].includes(parsed.hostname) && parsed.pathname.startsWith('/uploads/')) {
+-        const localPath = path.resolve(process.cwd(), parsed.pathname.replace(/^\/+/, ''))
+-        if (!localPath.startsWith(uploadsRoot) || !fs.existsSync(localPath)) {
+-          throw new Error('Local catalog asset is missing')
++      // Our own /uploads and /demo-assets routes are served by this process, so
++      // resolve them from disk instead of making a loopback HTTP request.
++      if (['localhost', '127.0.0.1'].includes(parsed.hostname)) {
++        const decodedPath = decodeURIComponent(parsed.pathname)
++        const localPath = decodedPath.startsWith('/demo-assets/')
++          ? path.resolve(process.cwd(), '..', 'demo_data', 'catalog', decodedPath.slice('/demo-assets/'.length))
++          : path.resolve(process.cwd(), decodedPath.replace(/^\/+/, ''))
++        if (!isPathInsideAllowedRoot(localPath) || !fs.existsSync(localPath)) {
++          throw new Error('Local catalog asset is missing or outside the allowed asset directories')
+         }
+         paths.push(localPath)
+         diagnostics.push({ source: value, status: 'ready', path: localPath })
+@@ -660,6 +795,7 @@ async function materializeCatalogReferences(references = []) {
+       }
+ 
+       if (!['http:', 'https:'].includes(parsed.protocol)) throw new Error('Unsupported URL protocol')
++      if (isBlockedHost(parsed.hostname)) throw new Error('Catalog URL points at a private or loopback address')
+       const controller = new AbortController()
+       const timeoutId = setTimeout(() => controller.abort(), 15000)
+       try {
+@@ -683,10 +819,10 @@ async function materializeCatalogReferences(references = []) {
+         clearTimeout(timeoutId)
+       }
+     } catch (error) {
+-      // Relative paths are accepted only when they resolve to an existing file
+-      // inside this project. A URL failure is reported as unavailable evidence.
++      // Relative paths are accepted only when they resolve inside one of the
++      // allowed asset roots. A URL failure is reported as unavailable evidence.
+       const localPath = path.resolve(process.cwd(), value)
+-      if (!/^https?:\/\//i.test(value) && fs.existsSync(localPath)) {
++      if (!/^https?:\/\//i.test(value) && isPathInsideAllowedRoot(localPath) && fs.existsSync(localPath)) {
+         paths.push(localPath)
+         diagnostics.push({ source: value, status: 'ready', path: localPath })
+       } else {
+@@ -877,15 +1013,29 @@ router.post('/', async (req, res) => {
+     console.log(`[FAST PATH] Cache missed — running live 5-layer pipeline`)
+ 
+     if (!isGenerateMode && catalogPaths.length === 0) {
+-      return res.status(400).json({ success: false, error: "Please upload catalog images to run verification." })
++      // Include why each supplied reference was rejected. Returning a bare
++      // "upload catalog images" for a URL that was fetched-and-refused told the
++      // seller nothing about what to fix.
++      const rejected = catalogEvidenceDiagnostics.filter(item => item.status === 'unavailable')
++      return res.status(400).json({
++        success: false,
++        error: rejected.length
++          ? `None of the supplied catalog references could be loaded: ${rejected.map(item => `${item.source} (${item.error})`).join('; ')}`
++          : 'Please upload catalog images to run verification.',
++        catalogEvidenceDiagnostics,
++      })
+     }
+ 
+     // New anchor assets need a functioning visual worker. A missing worker is
+     // an explicit pending state, not an excuse to manufacture a green report.
+-    if (!(await isLocalVisionServiceAvailable())) {
++    const visionStatus = await getVisionServiceStatus()
++    if (!visionStatus.usable) {
++      const detail = visionStatus.reachable
++        ? `the worker at ${visionStatus.url} is running but its CLIP model is not loaded (${visionStatus.detail})`
++        : `the worker at ${visionStatus.url} is not reachable (${visionStatus.detail})`
+       return res.status(202).json(buildPendingResponse({
+         mode: 'verify',
+-        reason: 'The live visual-analysis worker is unavailable, so Anchor cannot independently verify these new anchors yet.',
++        reason: `Anchor cannot independently verify these new anchors yet: ${detail}.`,
+         catalogEvidenceDiagnostics,
+       }))
+     }
+@@ -1085,21 +1235,31 @@ router.post('/', async (req, res) => {
+         return normalized
+       }
+       const declaredLength = attributeValue(parsedDeclared.overall_length)
++      // A dominant-colour mask (no declared colour resolved to a hue) is a
++      // noisier segmentation than a hue-matched one. It is good enough to raise
++      // for review, but it must not silently block publication on its own —
++      // that would trade a known blind spot for a false positive against an
++      // honest seller.
++      const lowConfidenceMask = catalogGeometry.mask_confidence === 'LOW'
+       if (lengthFamily(declaredLength) !== lengthFamily(catalogGeometry.length_category)) {
+         const lengthRow = comparison.find(row => row.key === 'overall_length')
+         if (lengthRow) {
+-          lengthRow.status = 'mismatch'
+-          lengthRow.severity = 'HIGH'
++          lengthRow.status = lowConfidenceMask ? 'warning' : 'mismatch'
++          lengthRow.severity = lowConfidenceMask ? 'MEDIUM' : 'HIGH'
+           lengthRow.note = `Catalog geometry places the hem at ${(catalogGeometry.normalized_hem * 100).toFixed(0)}% of visible body height, which reads as "${catalogGeometry.length_category}" rather than "${declaredLength}".`
++            + (lowConfidenceMask ? ` Measured with a ${catalogGeometry.mask_source} mask, so treat this as a prompt to review rather than a confirmed mismatch.` : '')
+           lengthRow.geometry_cross_validated = true
++          lengthRow.geometry_mask = catalogGeometry.mask_source
+         }
+         modelIssues.push({
+           attr: 'Catalog garment length',
+           declared: declaredLength,
+           detected: catalogGeometry.length_category,
+-          confidence: 'MEDIUM',
+-          severity: 'HIGH',
+-          note: `The visible hem position contradicts the seller's "${declaredLength}" claim. Replace the generated catalog views or correct the listing before customers see it.`,
++          confidence: lowConfidenceMask ? 'LOW' : 'MEDIUM',
++          severity: lowConfidenceMask ? 'MEDIUM' : 'HIGH',
++          note: lowConfidenceMask
++            ? `The visible hem position looks inconsistent with the seller's "${declaredLength}" claim, measured with a ${catalogGeometry.mask_source} mask. Declare a primary colour so Anchor can segment the garment precisely, or confirm the length manually.`
++            : `The visible hem position contradicts the seller's "${declaredLength}" claim. Replace the generated catalog views or correct the listing before customers see it.`,
+         })
+       }
+     }
+@@ -1376,17 +1536,21 @@ router.post('/', async (req, res) => {
+               ? 'regular'
+               : 'long'
+           const catalogMatchesChart = expectedFamily === detectedFamily
++          // Same reasoning as the Layer 3 length check: a dominant-colour mask
++          // is review-grade evidence, not a publication blocker.
++          const lowConfidenceMask = catalogGeometry.mask_confidence === 'LOW'
+           comparison.push({
+             key: 'catalog_size_chart_fit',
+             label: 'Catalog image vs size chart',
+             anchor_value: `Size ${sizeKey}: ${lengthVal} in`,
+             catalog_value: catalogLength,
+             declared_value: expectedFamily === 'short' ? 'Short / Crop' : expectedFamily === 'regular' ? 'Hip / Regular' : 'Long',
+-            status: catalogMatchesChart ? 'match' : 'mismatch',
+-            severity: catalogMatchesChart ? 'LOW' : 'HIGH',
++            status: catalogMatchesChart ? 'match' : (lowConfidenceMask ? 'warning' : 'mismatch'),
++            severity: catalogMatchesChart ? 'LOW' : (lowConfidenceMask ? 'MEDIUM' : 'HIGH'),
+             note: catalogMatchesChart
+               ? 'The visible catalog length is plausible for the selected size-chart measurement.'
+-              : `Size ${sizeKey} is listed at ${lengthVal} inches, but the catalog garment reads as "${catalogLength}".`,
++              : `Size ${sizeKey} is listed at ${lengthVal} inches, but the catalog garment reads as "${catalogLength}".`
++                + (lowConfidenceMask ? ` Measured with a ${catalogGeometry.mask_source} mask — review rather than a confirmed mismatch.` : ''),
+             source: 'SizeChart+Sharp-Geometry',
+           })
+           if (!catalogMatchesChart) {
+@@ -1394,9 +1558,11 @@ router.post('/', async (req, res) => {
+               attr: 'Catalog fit vs size chart',
+               declared: `Size ${sizeKey}, ${lengthVal} in length`,
+               detected: catalogLength,
+-              confidence: 'MEDIUM',
+-              severity: 'HIGH',
+-              note: 'The generated model image does not visually preserve the garment length implied by the seller size chart.',
++              confidence: lowConfidenceMask ? 'LOW' : 'MEDIUM',
++              severity: lowConfidenceMask ? 'MEDIUM' : 'HIGH',
++              note: lowConfidenceMask
++                ? `The catalog image may not preserve the garment length implied by the seller size chart, measured with a ${catalogGeometry.mask_source} mask. Declare a primary colour for a precise measurement.`
++                : 'The generated model image does not visually preserve the garment length implied by the seller size chart.',
+             })
+           }
+         }
+@@ -1409,14 +1575,28 @@ router.post('/', async (req, res) => {
+     // LAYER 4: BAYESIAN MATHEMATICAL FUSION
+     // Fuse ALL evidence BEFORE generating verdict (not after!)
+     // ══════════════════════════════════════════════════════════════════
++    // Fusion runs on whatever evidence exists. Skipping it whenever CLIP was
++    // down discarded the pHash and attribute evidence that were still valid,
++    // and left the UI with no score at all. A null likelihood ratio for a
++    // missing sensor leaves the posterior unchanged, which is the correct
++    // handling; confidence_tier records how much of the suite contributed.
+     let fusionResult = null
+-    if (clipResult && !clipResult.unavailable) {
++    if (!isGenerateMode && comparison.length > 0) {
+       fusionResult = calculateBayesianFusion(
+-        clipResult.similarity_score,
++        clipResult && !clipResult.unavailable ? clipResult.similarity_score : null,
+         phashResult ? phashResult.phash_distance : null,
+         comparison
+       )
+-      console.log(`[LAYER 4] Bayesian Fusion Probability: ${fusionResult.probability}%`)
++      if (fusionResult.is_prior_only) {
++        console.warn('[LAYER 4] No usable evidence — fusion would report the prior only. Suppressing score.')
++        fusionResult = null
++      } else {
++        console.log(
++          `[LAYER 4] Bayesian Fusion Probability: ${fusionResult.probability}% ` +
++          `(${fusionResult.confidence_tier} confidence; used ${fusionResult.signals_used.join(', ')}` +
++          `${fusionResult.signals_missing.length ? `; missing ${fusionResult.signals_missing.join(', ')}` : ''})`
++        )
++      }
+     }
+ 
+     // ── Verdict (now incorporating fusion score) ─────────────────
+diff --git a/backend/server.js b/backend/server.js
+index ba3f101..97175a5 100644
+--- a/backend/server.js
++++ b/backend/server.js
+@@ -12,7 +12,8 @@ import csvRoutes from './routes/csv.js'
+ import authRoutes from './routes/auth.js'
+ import productRoutes from './routes/products.js'
+ import sizechartRoutes from './routes/sizechart.js'
+-import { initDB } from './services/database.js'
++import { initDB, getDB } from './services/database.js'
++import { getMlServiceHealth, ML_SERVICE_URL } from './services/ml_client.js'
+ 
+ const __dirname = path.dirname(fileURLToPath(import.meta.url))
+ const app = express()
+@@ -67,10 +68,53 @@ const upload = multer({
+ 
+ // ─── Routes ──────────────────────────────────────────────────────────
+ 
+-// Health check
+-app.get('/api/health', (req, res) => {
+-  res.json({
+-    status: 'ok',
++// Health check.
++//
++// This used to be a static `status: 'ok'` that reported success no matter what
++// was actually running — including the failure mode that broke verification
++// most often, the Python ML worker not being started. It now probes each
++// dependency and returns 503 when a decision-critical one is down, so a red
++// health check is a real signal rather than decoration.
++app.get('/api/health', async (req, res) => {
++  const ml = await getMlServiceHealth()
++
++  let database = { ok: false, detail: 'not initialized' }
++  try {
++    getDB().prepare('SELECT 1').get()
++    database = { ok: true, detail: 'reachable' }
++  } catch (err) {
++    database = { ok: false, detail: err.message }
++  }
++
++  // Layers 1–4 are local and decision-critical. Layer 5 (text generation) is
++  // enhancement-only, so a missing LLM key degrades but never fails the check.
++  const criticalOk = database.ok && ml.reachable && ml.clip_loaded !== false
++  const degraded = criticalOk && (ml.vit_loaded === false || ml.clip_loaded === null)
++
++  res.status(criticalOk ? 200 : 503).json({
++    status: criticalOk ? (degraded ? 'degraded' : 'ok') : 'unhealthy',
++    checks: {
++      database,
++      ml_worker: {
++        ok: ml.reachable && ml.clip_loaded !== false,
++        url: ml.url,
++        reachable: ml.reachable,
++        clip_loaded: ml.clip_loaded,
++        vit_loaded: ml.vit_loaded,
++        device: ml.device || null,
++        detail: ml.detail,
++      },
++      llm_text_generation: {
++        // Enhancement only — Layer 5. Never gates the overall status.
++        ok: true,
++        groq_key_present: Boolean(process.env.GROQ_API_KEY),
++        gemini_key_present: Boolean(
++          (process.env.GEMINI_API_KEYS && process.env.GEMINI_API_KEYS.trim()) ||
++          (process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY.trim())
++        ),
++        detail: 'Optional. Only used for Layer 5 listing text; absence does not affect verification.',
++      },
++    },
+     verification: {
+       exact_fixture: 'Hash-bound evidence observations are rechecked against the current seller claims.',
+       new_inputs: 'A live visual-analysis worker is required; unavailable inputs remain UNVERIFIED.',
+@@ -104,9 +148,29 @@ app.use((err, req, res, next) => {
+ })
+ 
+ // ─── Start ───────────────────────────────────────────────────────────
+-app.listen(PORT, () => {
++app.listen(PORT, async () => {
+   console.log(`Anchor backend running on http://localhost:${PORT}`)
++
++  // Boot-time self-check. The ML worker is a separate process that has to be
++  // started by hand; forgetting it used to surface only as empty verification
++  // results much later, because the Node log looked perfectly healthy.
++  const ml = await getMlServiceHealth()
++  if (!ml.reachable) {
++    console.warn(`⛔ ML worker unreachable at ${ML_SERVICE_URL} (${ml.detail})`)
++    console.warn('   Verification of new anchors will return EVIDENCE_PENDING until it is running.')
++    console.warn('   Start it with:  python services/ai_server.py')
++  } else if (ml.clip_loaded === false) {
++    console.warn(`⚠️  ML worker is up at ${ML_SERVICE_URL} but CLIP is NOT loaded (${ml.detail})`)
++  } else if (ml.vit_loaded === false) {
++    console.warn(`⚠️  ML worker is up at ${ML_SERVICE_URL}, CLIP loaded, but the ViT is NOT loaded — attribute extraction will be CLIP-only`)
++  } else if (ml.clip_loaded === null) {
++    console.warn(`⚠️  ML worker at ${ML_SERVICE_URL} has no /health route — model load state unknown`)
++  } else {
++    console.log(`✅ ML worker healthy at ${ML_SERVICE_URL} (CLIP + ViT loaded, device: ${ml.device || 'cpu'})`)
++  }
++
+   console.log(`API endpoints:`)
++  console.log(`  GET  /api/health            — dependency health (503 when a critical one is down)`)
+   console.log(`  POST /api/extract/anchor   — extract attributes from anchor images`)
+   console.log(`  POST /api/verify            — single-prompt verification pipeline`)
+   console.log(`  GET  /api/csv/template      — download Myntra CSV template`)
+diff --git a/backend/services/ai_server.py b/backend/services/ai_server.py
+index b7ba47e..8ffa22e 100644
+--- a/backend/services/ai_server.py
++++ b/backend/services/ai_server.py
+@@ -175,6 +175,34 @@ app.add_middleware(
+     allow_headers=["*"],
+ )
+ 
++
++@app.get("/health")
++def health():
++    """Report what is actually loaded, not just that the process is listening.
++
++    FastAPI serves /openapi.json regardless of model state, so the Node backend
++    used to treat a model-less worker as healthy and every verification layer
++    silently returned nothing. This route makes the real state checkable.
++    """
++    clip_ok = clip_model is not None and clip_preprocess is not None and clip_tokenizer is not None
++    vit_ok = vit_model is not None and vit_transform is not None and vit_meta is not None
++    if clip_ok and vit_ok:
++        status = "ok"
++    elif clip_ok or vit_ok:
++        status = "degraded"
++    else:
++        status = "unavailable"
++
++    return {
++        "status": status,
++        "clip_loaded": clip_ok,
++        "vit_loaded": vit_ok,
++        "clip_model": ("transformers-CLIP" if use_hf_clip else "open_clip") if clip_ok else None,
++        "vit_labels": sorted(vit_meta["label_maps"].keys()) if vit_ok else None,
++        "device": str(vit_device) if vit_device is not None else None,
++    }
++
++
+ # ── CLIP abstraction helpers ──
+ def encode_image_clip(pil_image):
+     """Encode a PIL image to a normalized feature vector."""
+diff --git a/backend/services/fusion.js b/backend/services/fusion.js
+index fddf6fd..014d6e8 100644
+--- a/backend/services/fusion.js
++++ b/backend/services/fusion.js
+@@ -81,6 +81,18 @@ function getAttributesLikelihoodRatio(comparison) {
+   return Math.max(0.01, Math.min(likelihoodRatio, 100.0));
+ }
+ 
++/**
++ * Fuse whatever evidence is actually present.
++ *
++ * A missing signal contributes a null likelihood ratio, which leaves the
++ * posterior untouched — that is the mathematically correct handling of "no
++ * observation", and it is why the caller must NOT skip fusion when one sensor
++ * is down. It previously did, so a CLIP outage threw away perfectly good pHash
++ * and attribute evidence and reported no score at all.
++ *
++ * The returned confidence_tier says how much of the sensor suite was available,
++ * so a score built on one signal is never displayed as if it came from three.
++ */
+ export function calculateBayesianFusion(clipScore, phashDistance, comparisonArray) {
+   let currentProb = PRIOR_MATCH_PROBABILITY;
+ 
+@@ -96,8 +108,28 @@ export function calculateBayesianFusion(clipScore, phashDistance, comparisonArra
+   const lrAttrs = getAttributesLikelihoodRatio(comparisonArray);
+   currentProb = updateProbability(currentProb, lrAttrs);
+ 
++  const signals = [
++    { name: 'clip_similarity', ratio: lrClip },
++    { name: 'phash_distance', ratio: lrPhash },
++    { name: 'attribute_comparison', ratio: lrAttrs },
++  ];
++  const signalsUsed = signals.filter(s => s.ratio !== null && s.ratio !== undefined).map(s => s.name);
++  const signalsMissing = signals.filter(s => s.ratio === null || s.ratio === undefined).map(s => s.name);
++
++  const confidenceTier = signalsUsed.length === signals.length
++    ? 'full'
++    : signalsUsed.length > 0
++      ? 'partial'
++      : 'none';
++
+   return {
+     probability: (currentProb * 100).toFixed(1), // Percentage string
++    confidence_tier: confidenceTier,
++    signals_used: signalsUsed,
++    signals_missing: signalsMissing,
++    // With no evidence at all the "probability" is just the prior. Say so
++    // rather than presenting 50% as a measurement.
++    is_prior_only: signalsUsed.length === 0,
+     breakdown: {
+       prior: PRIOR_MATCH_PROBABILITY,
+       lr_clip: lrClip,
+diff --git a/backend/services/gemini.js b/backend/services/gemini.js
+index b617e73..b731b0e 100644
+--- a/backend/services/gemini.js
++++ b/backend/services/gemini.js
+@@ -7,9 +7,21 @@ import sharp from 'sharp'
+ import crypto from 'crypto'
+ import { execFile } from 'child_process'
+ import { promisify } from 'util'
++import { mlPost } from './ml_client.js'
+ 
+ const execFileAsync = promisify(execFile)
+ 
++const IMAGE_MIME_TYPES = {
++  '.jpg': 'image/jpeg',
++  '.jpeg': 'image/jpeg',
++  '.png': 'image/png',
++  '.webp': 'image/webp',
++}
++
++function mimeTypeForImage(filePath) {
++  return IMAGE_MIME_TYPES[path.extname(filePath || '').toLowerCase()] || 'image/jpeg'
++}
++
+ const CACHE_DIR = path.join(process.cwd(), '.cache')
+ if (!fs.existsSync(CACHE_DIR)) fs.mkdirSync(CACHE_DIR)
+ 
+@@ -593,20 +605,15 @@ export function generateVerdict(comparison, modelIssues = []) {
+  */
+ export async function getGarmentBoundingBoxRatio(imagePath) {
+   try {
+-    const response = await fetch('http://localhost:8100/segment', {
+-      method: 'POST',
+-      headers: { 'Content-Type': 'application/json' },
+-      body: JSON.stringify({ image_path: imagePath })
+-    })
+-    const result = await response.json()
+-    if (result.success) {
+-      return { 
+-        ratio: Number(result.ratio).toFixed(2), 
++    const result = await mlPost('/segment', { image_path: imagePath })
++    if (result?.success) {
++      return {
++        ratio: Number(result.ratio).toFixed(2),
+         length_category: result.length_category,
+         cutout_path: result.cutout_path
+       }
+     } else {
+-      console.warn("Segmentation API returned error:", result.error)
++      console.warn("Segmentation API returned error:", result?.error || 'worker unavailable')
+       return null
+     }
+   } catch (err) {
+@@ -644,13 +651,8 @@ export async function generateCorrections(comparisonResult, modelIssues = [], an
+     }))
+ 
+     try {
+-      const response = await fetch('http://localhost:8100/clip/binary-batch', {
+-        method: 'POST',
+-        headers: { 'Content-Type': 'application/json' },
+-        body: JSON.stringify({ image_path: anchorImagePath, pairs })
+-      })
+-      const result = await response.json()
+-      if (result.success) {
++      const result = await mlPost('/clip/binary-batch', { image_path: anchorImagePath, pairs })
++      if (result?.success) {
+         crossVerifyResults = result.results
+       }
+     } catch (err) {
+@@ -731,16 +733,11 @@ export async function generateCorrections(comparisonResult, modelIssues = [], an
+  */
+ export async function runClipZeroShot(imagePath) {
+   try {
+-    const response = await fetch('http://localhost:8100/clip/zero-shot', {
+-      method: 'POST',
+-      headers: { 'Content-Type': 'application/json' },
+-      body: JSON.stringify({ image_path: imagePath })
+-    })
+-    const result = await response.json()
+-    if (result.success) {
++    const result = await mlPost('/clip/zero-shot', { image_path: imagePath })
++    if (result?.success) {
+       return result.attributes
+     } else {
+-      console.warn('[CLIP-ZS] API Zero-shot returned error:', result.error)
++      console.warn('[CLIP-ZS] API Zero-shot returned error:', result?.error || 'worker unavailable')
+       return null
+     }
+   } catch (err) {
+@@ -1098,10 +1095,12 @@ export function checkModelProportions(catalogAttrs, declaredHeight, declaredSize
+   const issues = [];
+   const h = catalogAttrs?.model_apparent_height;
+   const b = catalogAttrs?.model_apparent_build;
+-  
+-  if (catalogAttrs?.garment_type?.value === 'Kurti' || catalogAttrs?.garment_type?.value === 'Dress') {
+-    if (h) h.value = 'tall (5\'8+)';
+-  }
++
++  // Removed: a hardcoded override that rewrote the detected height to
++  // "tall (5'8+)" whenever the garment type was Kurti or Dress. It mutated the
++  // caller's attribute object, so a value Anchor never measured was both
++  // compared against the seller's declaration and returned to the UI as
++  // "detected". Height either comes from the detector or the check is skipped.
+ 
+   if (!h || !b || h.value === 'No model visible') return issues;
+ 
+@@ -1616,13 +1615,8 @@ Model must have a perfectly consistent identity across all 5 panels. White studi
+       sourceBuffer = fs.readFileSync(cvOverallLength.cutout_path)
+     } else {
+       try {
+-        const response = await fetch('http://localhost:8100/segment', {
+-          method: 'POST',
+-          headers: { 'Content-Type': 'application/json' },
+-          body: JSON.stringify({ image_path: anchorPath })
+-        })
+-        const segResult = await response.json()
+-        if (segResult.success && segResult.cutout_path) {
++        const segResult = await mlPost('/segment', { image_path: anchorPath })
++        if (segResult?.success && segResult.cutout_path) {
+           sourceBuffer = fs.readFileSync(segResult.cutout_path)
+         } else {
+           sourceBuffer = fs.readFileSync(anchorPath)
+@@ -1707,52 +1701,21 @@ Model must have a perfectly consistent identity across all 5 panels. White studi
+ }
+ 
+ export async function runClipSimilarity(anchorPath, catalogPath) {
+-  try {
+-    const response = await fetch('http://localhost:8100/clip/similarity', {
+-      method: 'POST',
+-      headers: { 'Content-Type': 'application/json' },
+-      body: JSON.stringify({ anchor_path: anchorPath, catalog_path: catalogPath })
+-    })
+-    const result = await response.json()
+-    if (result.success) {
+-      return result
+-    } else {
+-      console.warn("CLIP API returned error:", result.error)
+-      return null
+-    }
+-  } catch (err) {
+-    console.warn("Could not calculate CLIP similarity via API:", err.message)
+-    return null
+-  }
++  const result = await mlPost('/clip/similarity', { anchor_path: anchorPath, catalog_path: catalogPath })
++  if (result?.success) return result
++  if (result?.error) console.warn('CLIP API returned error:', result.error)
++  return null
+ }
+ 
+ export async function runVitInference(imagePath) {
+-  try {
+-    const response = await fetch('http://localhost:8100/vit/predict', {
+-      method: 'POST',
+-      headers: { 'Content-Type': 'application/json' },
+-      body: JSON.stringify({ image_path: imagePath })
+-    })
+-    return await response.json()
+-  } catch (err) {
+-    console.warn("ViT Inference API failed:", err.message)
+-    return null
+-  }
++  return await mlPost('/vit/predict', { image_path: imagePath })
+ }
+ 
+ export async function runPhashSimilarity(anchorPath, catalogPath) {
+-  try {
+-    const response = await fetch('http://localhost:8100/phash', {
+-      method: 'POST',
+-      headers: { 'Content-Type': 'application/json' },
+-      body: JSON.stringify({ anchor_path: anchorPath, catalog_path: catalogPath })
+-    })
+-    const result = await response.json()
+-    return result.success ? result : null
+-  } catch (err) {
+-    console.warn("pHash API failed:", err.message)
+-    return null
+-  }
++  const result = await mlPost('/phash', { anchor_path: anchorPath, catalog_path: catalogPath })
++  if (result?.success) return result
++  if (result?.error) console.warn('pHash API returned error:', result.error)
++  return null
+ }
+ 
+ export async function enhanceMetadataWithVision(anchorImagePath, currentMetadata) {
+@@ -1761,8 +1724,11 @@ export async function enhanceMetadataWithVision(anchorImagePath, currentMetadata
+   // Fallback to Gemini File API
+   try {
+     const fileManager = new GoogleAIFileManager(getNextKey() || process.env.GEMINI_API_KEY)
++    // The anchor set contains .png as well as .jpg/.jpeg. Uploading a PNG
++    // labelled image/jpeg made Gemini reject or mis-decode the file, so the
++    // metadata step failed for exactly the assets it was meant to read.
+     const fileResult = await fileManager.uploadFile(anchorImagePath, {
+-      mimeType: 'image/jpeg',
++      mimeType: mimeTypeForImage(anchorImagePath),
+       displayName: 'anchor'
+     })
+     
+diff --git a/backend/services/ml_client.js b/backend/services/ml_client.js
+new file mode 100644
+index 0000000..21f5953
+--- /dev/null
++++ b/backend/services/ml_client.js
+@@ -0,0 +1,108 @@
++/**
++ * Local ML worker client (ai_server.py, FastAPI).
++ *
++ * Every Layer 1–3.7 signal comes from this process, so its failure modes have
++ * to be visible instead of silently degrading into an empty result.
++ *
++ * Two things this module exists to fix:
++ *   1. Host consistency. The worker binds IPv4 (0.0.0.0). "localhost" resolves
++ *      to ::1 first on a lot of machines, which produced ECONNREFUSED /
++ *      "fetch failed" even with the worker running. We always use an explicit
++ *      IPv4 loopback unless ANCHOR_ML_URL says otherwise.
++ *   2. Timeouts. A hung worker used to hold an Express request open forever
++ *      because none of the fetch calls passed a signal.
++ */
++
++export const ML_SERVICE_URL = (process.env.ANCHOR_ML_URL || 'http://127.0.0.1:8100').replace(/\/+$/, '')
++
++const DEFAULT_TIMEOUT_MS = Number(process.env.ANCHOR_ML_TIMEOUT_MS || 30000)
++const HEALTH_TIMEOUT_MS = Number(process.env.ANCHOR_ML_HEALTH_TIMEOUT_MS || 2000)
++
++/**
++ * POST JSON to the ML worker. Returns the parsed body, or null when the worker
++ * is unreachable, times out, or replies with a non-2xx / non-JSON response.
++ * Callers already treat null as "signal unavailable".
++ */
++export async function mlPost(endpoint, payload, { timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
++  const controller = new AbortController()
++  const timer = setTimeout(() => controller.abort(), timeoutMs)
++  try {
++    const response = await fetch(`${ML_SERVICE_URL}${endpoint}`, {
++      method: 'POST',
++      headers: { 'Content-Type': 'application/json' },
++      body: JSON.stringify(payload),
++      signal: controller.signal,
++    })
++    if (!response.ok) {
++      console.warn(`[ML] ${endpoint} returned HTTP ${response.status}`)
++      return null
++    }
++    return await response.json()
++  } catch (err) {
++    const reason = err.name === 'AbortError' ? `timed out after ${timeoutMs}ms` : err.message
++    console.warn(`[ML] ${endpoint} unavailable: ${reason}`)
++    return null
++  } finally {
++    clearTimeout(timer)
++  }
++}
++
++/**
++ * Ask the worker what it actually has loaded.
++ *
++ * The previous availability probe hit /openapi.json, which FastAPI serves even
++ * when CLIP and the ViT failed to load — so a worker with no models looked
++ * healthy and every downstream layer returned nothing. /health reports per-model
++ * state; if an older worker is running without that route we fall back to the
++ * reachability-only answer and say so.
++ */
++export async function getMlServiceHealth({ timeoutMs = HEALTH_TIMEOUT_MS } = {}) {
++  const controller = new AbortController()
++  const timer = setTimeout(() => controller.abort(), timeoutMs)
++  try {
++    const response = await fetch(`${ML_SERVICE_URL}/health`, { signal: controller.signal })
++    if (response.ok) {
++      const body = await response.json()
++      return {
++        reachable: true,
++        url: ML_SERVICE_URL,
++        clip_loaded: Boolean(body.clip_loaded),
++        vit_loaded: Boolean(body.vit_loaded),
++        clip_model: body.clip_model || null,
++        vit_labels: body.vit_labels || null,
++        device: body.device || null,
++        detail: body.status || 'ok',
++      }
++    }
++    if (response.status !== 404) {
++      return { reachable: true, url: ML_SERVICE_URL, clip_loaded: false, vit_loaded: false, detail: `worker replied HTTP ${response.status}` }
++    }
++  } catch (err) {
++    clearTimeout(timer)
++    const reason = err.name === 'AbortError' ? `no response within ${timeoutMs}ms` : err.message
++    return { reachable: false, url: ML_SERVICE_URL, clip_loaded: false, vit_loaded: false, detail: reason }
++  } finally {
++    clearTimeout(timer)
++  }
++
++  // /health missing — older worker build. Fall back to a reachability probe and
++  // be explicit that model state is unknown rather than assuming it is fine.
++  const fallback = new AbortController()
++  const fallbackTimer = setTimeout(() => fallback.abort(), timeoutMs)
++  try {
++    const response = await fetch(`${ML_SERVICE_URL}/openapi.json`, { signal: fallback.signal })
++    return {
++      reachable: response.ok,
++      url: ML_SERVICE_URL,
++      clip_loaded: null,
++      vit_loaded: null,
++      detail: response.ok
++        ? 'worker reachable but exposes no /health route — model load state unknown'
++        : `worker replied HTTP ${response.status}`,
++    }
++  } catch (err) {
++    return { reachable: false, url: ML_SERVICE_URL, clip_loaded: false, vit_loaded: false, detail: err.message }
++  } finally {
++    clearTimeout(fallbackTimer)
++  }
++}
+diff --git a/backend/test_e2e.js b/backend/test_e2e.js
+index 0b6b6a3..39d5a41 100644
+--- a/backend/test_e2e.js
++++ b/backend/test_e2e.js
+@@ -1,5 +1,11 @@
+ // End-to-end API tests for Anchor
+ // Uses correct anchor file paths and proper evidence binding
++//
++// dotenv must load BEFORE evidence_profile.js, which reads
++// EVIDENCE_BINDING_SECRET at module scope. Without it this file signed bindings
++// with the built-in fallback secret while the server used the one from .env, so
++// every recheck test failed with "Anchor evidence changed or expired".
++import 'dotenv/config';
+ import { createEvidenceBinding, getEvidenceProfileById } from './evidence_profile.js';
+ import path from 'path';
+ import { fileURLToPath } from 'url';
+@@ -38,10 +44,24 @@ async function testAll() {
+   }
+ 
+   // 1. Health check
++  // /api/health reports real dependency state: 200 when the ML worker is up,
++  // 503 when it is not. Asserting a flat 200 would have made the check pass in
++  // exactly the situation it exists to catch, so assert the shape instead and
++  // report which state the run observed.
+   console.log('\n--- 1. Health ---');
+   try {
+     const r = await fetch(`${BASE}/api/health`);
+-    assert('Health status 200', r.status, 200);
++    assert('Health status is 200 or 503', [200, 503].includes(r.status), true);
++    const body = await r.json();
++    assert('Health reports a status', typeof body.status === 'string', true);
++    assert('Health reports database check', typeof body.checks?.database?.ok === 'boolean', true);
++    assert('Health reports ml_worker check', typeof body.checks?.ml_worker?.reachable === 'boolean', true);
++    assert(
++      'Status is consistent with the ML worker check',
++      body.status === 'unhealthy',
++      !(body.checks.database.ok && body.checks.ml_worker.reachable && body.checks.ml_worker.clip_loaded !== false)
++    );
++    console.log(`    (observed: ${body.status}; ML worker reachable=${body.checks.ml_worker.reachable})`);
+   } catch(e) { fail++; console.log('  ❌ Health:', e.message); }
+ 
+   // 2. Products/all endpoint
+diff --git a/frontend/src/index.css b/frontend/src/index.css
+index 8776f56..9b1f4d9 100644
+--- a/frontend/src/index.css
++++ b/frontend/src/index.css
+@@ -3080,6 +3080,7 @@ input:focus, select:focus, textarea:focus, .form-input:focus, .form-select:focus
+ .bayesian-confidence-breakdown > div { padding: 12px; border: 1px solid #e9dfe6; border-radius: 10px; background: rgba(255,255,255,.75); }
+ .bayesian-confidence-breakdown span { display: block; color: #867e87; font-size: 10px; font-weight: 800; letter-spacing: .055em; text-transform: uppercase; }
+ .bayesian-confidence-breakdown strong { display: block; margin-top: 5px; color: #413741; font-size: 13px; }
++.bayesian-confidence-note { margin-top: 12px; color: #867e87; font-size: 12px; line-height: 1.5; }
+ 
+ .comparison-view-selector { display: flex; justify-content: space-between; align-items: center; gap: 15px; margin-top: 16px; padding: 13px; border: 1px solid #e9dfe4; border-radius: 11px; background: #fffdfd; }
+ .comparison-view-selector > div:first-child { display: grid; gap: 3px; color: #443b45; font-size: 13px; }
+diff --git a/frontend/src/pages/Verify.jsx b/frontend/src/pages/Verify.jsx
+index 4d6ef23..0fba569 100644
+--- a/frontend/src/pages/Verify.jsx
++++ b/frontend/src/pages/Verify.jsx
+@@ -200,6 +200,18 @@ function catalogEvidenceForClaim(claim, catalogPreviews = [], diagnostics = [])
+   }
+ }
+ 
++/**
++ * Render a Bayesian likelihood ratio. A null/undefined ratio means the signal
++ * was never observed — which is not the same as a ratio of 0, and must not be
++ * displayed as one.
++ */
++function formatLikelihoodRatio(ratio, label) {
++  if (ratio === null || ratio === undefined || Number.isNaN(Number(ratio))) {
++    return `${label} — not measured`
++  }
++  return `${label} LR ${Number(ratio).toFixed(2)}`
++}
++
+ function sourceLabelsForClaim(claim) {
+   const sources = Array.isArray(claim.evidenceSource)
+     ? claim.evidenceSource
+@@ -788,15 +800,17 @@ export default function Verify() {
+   // Dynamically update verdict status based on un-fixed issues
+   let v = verdict ? JSON.parse(JSON.stringify(verdict)) : { status: 'PASS', reason: 'Completed', critical_issues: [] }
+   
++  // Removed: a client-side "+15 points per resolved row" boost applied straight
++  // to the Bayesian posterior. It inflated a number the backend computed from
++  // evidence using an arbitrary constant, and because `probability` arrives as
++  // a string it was doing string concatenation before Math.min coerced it back
++  // — so the displayed figure was neither the model's nor the intended boost.
++  // The score shown is now the server-computed one; editing claims and running
++  // Re-check recomputes it with the same math on the backend.
+   if (v.fusionResult) {
+-     const origFailCount = (comparisonResult || []).filter(r => r.status === 'mismatch' || r.status === 'warning').length;
+-     const currentFailCount = rows.filter(r => r.status === 'mismatch' || r.status === 'warning').length;
+-     const resolved = origFailCount - currentFailCount;
+-     if (resolved > 0) {
+-       const boost = resolved * 15;
+-       v.fusionResult.probability = Math.min(99, (v.fusionResult.probability || 0) + boost);
+-       v.overall_similarity = v.fusionResult.probability;
+-     }
++    const origFailCount = (comparisonResult || []).filter(r => r.status === 'mismatch' || r.status === 'warning').length;
++    const currentFailCount = rows.filter(r => r.status === 'mismatch' || r.status === 'warning').length;
++    v.fusionResultStale = currentFailCount !== origFailCount;
+   }
+ 
+   if (hasEvidenceProfile) {
+@@ -1510,10 +1524,25 @@ export default function Verify() {
+           </div>
+           <div className="bayesian-confidence-breakdown">
+             <div><span>Base likelihood</span><strong>{(Number(v.fusionResult.breakdown?.prior || 0) * 100).toFixed(0)}%</strong></div>
+-            <div><span>Visual similarity</span><strong>CLIP LR {Number(v.fusionResult.breakdown?.lr_clip || 0).toFixed(2)}</strong></div>
+-            <div><span>View consistency</span><strong>pHash LR {Number(v.fusionResult.breakdown?.lr_phash || 0).toFixed(2)}</strong></div>
+-            <div><span>Claim consistency</span><strong>Attribute LR {Number(v.fusionResult.breakdown?.lr_attributes || 0).toFixed(2)}</strong></div>
++            {/* A missing signal has a null likelihood ratio. Rendering that as
++                "0.00" read as overwhelming evidence AGAINST a match, which is
++                the opposite of "we did not observe this". */}
++            <div><span>Visual similarity</span><strong>{formatLikelihoodRatio(v.fusionResult.breakdown?.lr_clip, 'CLIP')}</strong></div>
++            <div><span>View consistency</span><strong>{formatLikelihoodRatio(v.fusionResult.breakdown?.lr_phash, 'pHash')}</strong></div>
++            <div><span>Claim consistency</span><strong>{formatLikelihoodRatio(v.fusionResult.breakdown?.lr_attributes, 'Attribute')}</strong></div>
+           </div>
++          {v.fusionResult.confidence_tier === 'partial' && (
++            <p className="bayesian-confidence-note">
++              Partial confidence: this score used {(v.fusionResult.signals_used || []).length} of{' '}
++              {(v.fusionResult.signals_used || []).length + (v.fusionResult.signals_missing || []).length} evidence signals.
++              Unavailable: {(v.fusionResult.signals_missing || []).join(', ') || 'none'}.
++            </p>
++          )}
++          {v.fusionResultStale && (
++            <p className="bayesian-confidence-note">
++              Claims have been edited since this score was computed. Run Re-check to recompute it against the evidence.
++            </p>
++          )}
+         </section>
+       )}
+ 
+-- 
+2.43.0
+
+
+From b5ec645cb48da652052ff011d889d02c9fada5a0 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sun, 9 Aug 2026 20:10:34 +0000
+Subject: [PATCH 2/3] Add the Verification Network: real measurement channels
+ on the live path
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Builds the verification layer into something that actually measures, using
+free and open tools only, without touching the three protected demo fixtures
+(croptop generation, kurti CSV, striped-dress CSV) — all three still resolve
+through the exact-hash gate and return before the live path runs, regression-
+verified after every change.
+
+New measurement channels (services/verification_math.py, worker endpoints):
+
+- C2 Colour fidelity — garment-masked LAB k-means palettes compared with
+  CIEDE2000 in the textile industry's kL=2 parameterisation, per-view
+  (front/front, back/back, closeup/closeup) with a median across views so one
+  occluded view cannot dominate. Garment located by a declared-category body-
+  region band plus interior/border cluster voting; closeups skip masking and
+  chromatic normalisation entirely (gray-world on a frame that IS the garment
+  bleaches the colour being verified). Validated on the demo set: identical
+  sets score delta-E 0.0, the known-bad striped-dress catalog scores 9.4,
+  different products 8.6-14.
+
+- C3 Print geometry — 2-D FFT dominant spatial period measured in cycles per
+  garment width, which camera distance cannot fake, plus gradient texture
+  energy for print coverage. The striped-dress mismatch measures as a 0.20
+  period ratio (5x scale difference); same-garment controls measure 0.95-1.05.
+  Solid garments report "not applicable", never "match".
+
+- C1 Identity — DINOv2-S/14 (same-object) and FashionCLIP (same-category)
+  cosines served separately and as one agreement-weighted family score with a
+  spread field, so fusion can treat the correlated embedding family as a
+  single evidence slot and dampen it when the models disagree.
+
+Worker v2 (services/ai_server.py):
+- All heavy imports (torch, open_clip, timm, rembg, imagehash) are guarded.
+  The worker now boots with just numpy+Pillow+FastAPI and serves the math
+  channels — previously a missing torch stack crashed the whole process.
+- /health reports a per-capability map; new status "math_only".
+- New endpoints: /channel/color, /channel/texture, /channel/identity.
+
+Fusion v2 (calculateNetworkFusion): multiplies likelihood ratios only across
+channels with independent physics — identity (one slot for the whole
+embedding family, falling back to the legacy raw CLIP score when the channel
+did not run), colour, print geometry, pHash, and the deterministic attribute
+comparison computed from the pre-channel comparison snapshot so channel
+evidence is never double-counted. Missing signals stay missing;
+confidence_tier reflects coverage.
+
+Pipeline integration (routes/verify.js): channels run strictly on the live
+path after the fixture gate, append seller-readable comparison rows and
+verdict issues, and a failed ViT/CLIP attribute extraction no longer forces
+UNVERIFIED when measured channel evidence exists — it becomes a coverage note.
+The worker-availability gate and both health checks now accept a math-only
+worker as degraded-but-usable instead of down.
+
+Verified end-to-end with the worker in math-only mode: the known-mismatched
+striped-dress listing submitted as new anchors is BLOCKED at 0.4% fused
+probability with named causes (colour delta-E 9.4, print scale 0.20, geometry
+length); the same garment on both sides passes at 99.5% with an honest
+"partial" confidence tier. All three demo fixtures byte-identical; e2e suite
+21/21; frontend builds.
+
+Also: scripts/fetch_models.py (one-command deep-channel weight fetch — HF
+downloads are blocked in this build environment, so weights install on the
+target machine), scripts/calibrate.py (threshold calibration on labelled
+pairs incl. same-category hard negatives), requirements.txt split into
+math-tier and deep-tier, README channel documentation, frontend fusion card
+renders the per-channel breakdown.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_013dH2GRLbUQX4E4mnweV9Bn
+---
+ .gitignore                                |   2 +
+ README.md                                 |  24 ++
+ backend/requirements.txt                  |  19 +-
+ backend/routes/verify.js                  |  96 ++++-
+ backend/scripts/calibrate.py              |  82 ++++
+ backend/scripts/fetch_models.py           |  59 +++
+ backend/server.js                         |  12 +-
+ backend/services/ai_server.py             | 203 +++++++--
+ backend/services/fusion.js                |  57 +++
+ backend/services/ml_client.js             |   2 +
+ backend/services/verification_channels.js | 253 +++++++++++
+ backend/services/verification_math.py     | 489 ++++++++++++++++++++++
+ backend/test_e2e.js                       |   6 +-
+ frontend/src/pages/Verify.jsx             |   8 +-
+ 14 files changed, 1256 insertions(+), 56 deletions(-)
+ create mode 100644 backend/scripts/calibrate.py
+ create mode 100644 backend/scripts/fetch_models.py
+ create mode 100644 backend/services/verification_channels.js
+ create mode 100644 backend/services/verification_math.py
+
+diff --git a/.gitignore b/.gitignore
+index 2381695..7833eec 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -11,3 +11,5 @@ backend/uploads/
+ /outputs/
+ /data/*.db
+ /backend/data/*.db
++__pycache__/
++*.pyc
+diff --git a/README.md b/README.md
+index 8f6bccf..d576154 100644
+--- a/README.md
++++ b/README.md
+@@ -68,6 +68,30 @@ The name comes from this idea: like a ship's anchor prevents drift, the real pho
+ 
+ > **Key design choice:** Layers 1–4 use **zero external API calls**. Verification works offline, never hits rate limits, and never sends product data to third parties. Only Layer 5 (text generation + catalog images) uses external APIs.
+ 
++### The Verification Network (measurement channels)
++
++On top of the layers, the live path fans each submission out to independent
++**measurement channels**, each answering one narrow question with its own
++physics, its own likelihood ratio, and an honest "not measured" when it can't
++run:
++
++| Channel | Question | Tech | Needs model weights? |
++|---|---|---|:---:|
++| **C1 Identity** | Same physical garment? | DINOv2 + FashionCLIP, fused as **one** correlated family | Yes (`scripts/fetch_models.py`) |
++| **C2 Colour fidelity** | Is the catalog colour the colour a shopper receives? | LAB k-means + CIEDE2000 (kL=2 textile standard), per-view median | **No — pure math** |
++| **C3 Print geometry** | Is the print scale/structure preserved? | 2-D FFT dominant period in cycles per garment width (camera-distance invariant) | **No — pure math** |
++| **C5 Attributes & logic** | Do declared attributes agree with images and each other? | Custom ViT + zero-shot + deterministic comparison | Partially |
++
++The worker reports a per-capability map at `GET :8100/health`; channels it
++can't serve are listed in the verification report as `signals_missing` —
++confidence tiers drop, scores never pretend. Fusion multiplies only channels
++with independent physics: the embedding models share one likelihood-ratio slot
++(their errors correlate — counting cousins twice manufactures false
++confidence).
++
++Calibration: `scripts/calibrate.py pairs.json` fits channel thresholds on
++labelled pairs (include same-category-different-product hard negatives).
++
+ ### Why Plain Code Makes the Final Call
+ 
+ A natural first idea: use one AI to check another AI's work. The problem — one guess checking another guess can share blind spots. Anchor deliberately uses **different types of checks** (mathematical fingerprints, a specialist model, a general-purpose AI, exact measurements) and only **plain, transparent, rule-based logic** makes the actual decision. Different methods make different mistakes, so requiring them to agree is stronger than trusting any single one.
+diff --git a/backend/requirements.txt b/backend/requirements.txt
+index df69f2d..ee9131b 100644
+--- a/backend/requirements.txt
++++ b/backend/requirements.txt
+@@ -1,9 +1,18 @@
+-rembg>=2.0.0
+-Pillow>=10.0.0
++# ── Tier 1: math channels (always required, tiny) ────────────────────
++# Colour delta-E (CIEDE2000), FFT print geometry, pHash. The worker boots and
++# serves decision-grade evidence with just these.
+ numpy>=1.24.0
+-open-clip-torch>=3.0.0
+-torch>=2.0.0
++Pillow>=10.0.0
++fastapi>=0.110.0
++uvicorn[standard]>=0.29.0
+ imagehash>=4.3.0
++
++# ── Tier 2: deep channels (optional — worker degrades gracefully) ────
++# Identity embeddings (DINOv2 + FashionCLIP), custom ViT attributes,
++# segmentation. Install these, then run scripts/fetch_models.py once.
++torch>=2.0.0
++torchvision>=0.15.0
++open-clip-torch>=3.0.0
+ timm>=1.0.0
+ safetensors>=0.4.0
+-torchvision>=0.15.0
++rembg>=2.0.0
+diff --git a/backend/routes/verify.js b/backend/routes/verify.js
+index a2398f6..142b08e 100644
+--- a/backend/routes/verify.js
++++ b/backend/routes/verify.js
+@@ -16,8 +16,9 @@ import {
+   runPhashSimilarity,
+   enhanceMetadataWithVision
+ } from '../services/gemini.js'
+-import { calculateBayesianFusion } from '../services/fusion.js'
++import { calculateBayesianFusion, calculateNetworkFusion } from '../services/fusion.js'
+ import { getMlServiceHealth } from '../services/ml_client.js'
++import { runVerificationNetwork } from '../services/verification_channels.js'
+ import { getDemoCachedResult } from '../demo_registry.js'
+ import {
+   findEvidenceProfile,
+@@ -421,9 +422,13 @@ function buildPendingResponse({ mode, reason, catalogEvidenceDiagnostics = [] })
+  */
+ async function getVisionServiceStatus() {
+   const health = await getMlServiceHealth()
+-  // clip_loaded === null means an older worker without /health: reachability is
+-  // all we can establish, so we accept it rather than blocking the pipeline.
+-  const usable = health.reachable && health.clip_loaded !== false
++  // Usable when the worker can contribute ANY decision-grade signal. A worker
++  // in math-only mode (no torch stack) still serves colour ΔE and FFT print
++  // geometry, which are real evidence — blocking on CLIP alone would throw
++  // that away. clip_loaded === null means an older worker without /health:
++  // reachability is all we can establish, so we accept it.
++  const mathChannels = health.capabilities?.color_delta_e === true
++  const usable = health.reachable && (health.clip_loaded !== false || mathChannels)
+   return { ...health, usable }
+ }
+ 
+@@ -1575,24 +1580,76 @@ router.post('/', async (req, res) => {
+     // LAYER 4: BAYESIAN MATHEMATICAL FUSION
+     // Fuse ALL evidence BEFORE generating verdict (not after!)
+     // ══════════════════════════════════════════════════════════════════
+-    // Fusion runs on whatever evidence exists. Skipping it whenever CLIP was
+-    // down discarded the pHash and attribute evidence that were still valid,
+-    // and left the UI with no score at all. A null likelihood ratio for a
+-    // missing sensor leaves the posterior unchanged, which is the correct
+-    // handling; confidence_tier records how much of the suite contributed.
++    // ══════════════════════════════════════════════════════════════════
++    // VERIFICATION NETWORK: independent measurement channels
++    //   C1 identity (DINOv2+CLIP family) · C2 colour ΔE2000 · C3 FFT print
++    // Runs strictly on the live path — the exact-hash fixture gate returned
++    // long before this point, so the three demo products never reach it.
++    // ══════════════════════════════════════════════════════════════════
++    let networkResult = null
++    let attributeComparison = [...comparison]  // snapshot BEFORE channel rows join
++    if (!isGenerateMode && anchorPaths.length > 0 && catalogPaths.length > 0) {
++      const garmentHint = attributeValue(parsedDeclared.articleType)
++        || attributeValue(parsedDeclared.garment_type)
++        || attributeValue(parsedAnchor.garment_type)
++        || null
++      console.log('[NETWORK] Running measurement channels (colour ΔE, print geometry, identity)...')
++      try {
++        networkResult = await runVerificationNetwork({ anchorPaths, catalogPaths, garmentHint })
++        for (const channel of networkResult.channels) {
++          const summary = channel.status === 'measured'
++            ? `LR ${channel.lr}`
++            : channel.status
++          console.log(`[NETWORK] ${channel.channel}: ${summary}`)
++        }
++        comparison.push(...networkResult.rows)
++        modelIssues.push(...networkResult.issues)
++
++        // A failed ViT/CLIP attribute extraction used to force the whole
++        // verdict to UNVERIFIED. When the network channels measured real
++        // evidence anyway, that is no longer the truth — soften the hard
++        // extraction failure into a coverage note so generateVerdict can rule
++        // on the evidence that does exist.
++        const measured = networkResult.channels.filter(c => c.status === 'measured').length
++        if (measured > 0 && modelIssues.some(i => i.extractionFailed)) {
++          modelIssues = modelIssues.filter(i => !i.extractionFailed)
++          modelIssues.push({
++            attr: 'Attribute extraction coverage',
++            declared: 'ViT + CLIP attribute reading',
++            detected: `Unavailable — verdict rests on ${measured} measurement channel(s) plus declared-attribute logic`,
++            confidence: 'MEDIUM',
++            severity: 'MEDIUM',
++            note: 'Local attribute extraction did not run; colour, print-geometry and logic evidence still apply. Re-verify when the full model set is loaded for maximum coverage.',
++          })
++        }
++      } catch (err) {
++        console.warn('[NETWORK] Channel orchestration failed:', err.message)
++        networkResult = null
++      }
++    }
++
++    // Fusion runs on whatever evidence exists. A missing sensor contributes a
++    // null likelihood ratio, which leaves the posterior unchanged — the score
++    // never pretends an unmeasured thing was measured, and confidence_tier
++    // records how much of the suite contributed.
++    //
++    // The attribute LR is computed from the PRE-channel comparison snapshot:
++    // channel evidence enters fusion once, through its own likelihood ratio,
++    // never a second time as a comparison row.
+     let fusionResult = null
+-    if (!isGenerateMode && comparison.length > 0) {
+-      fusionResult = calculateBayesianFusion(
+-        clipResult && !clipResult.unavailable ? clipResult.similarity_score : null,
+-        phashResult ? phashResult.phash_distance : null,
+-        comparison
+-      )
++    if (!isGenerateMode && (comparison.length > 0 || networkResult)) {
++      fusionResult = calculateNetworkFusion({
++        clipScore: clipResult && !clipResult.unavailable ? clipResult.similarity_score : null,
++        phashDistance: phashResult ? phashResult.phash_distance : null,
++        comparison: attributeComparison,
++        channelRatios: networkResult ? networkResult.ratios : {},
++      })
+       if (fusionResult.is_prior_only) {
+         console.warn('[LAYER 4] No usable evidence — fusion would report the prior only. Suppressing score.')
+         fusionResult = null
+       } else {
+         console.log(
+-          `[LAYER 4] Bayesian Fusion Probability: ${fusionResult.probability}% ` +
++          `[LAYER 4] Network Fusion Probability: ${fusionResult.probability}% ` +
+           `(${fusionResult.confidence_tier} confidence; used ${fusionResult.signals_used.join(', ')}` +
+           `${fusionResult.signals_missing.length ? `; missing ${fusionResult.signals_missing.join(', ')}` : ''})`
+         )
+@@ -1746,6 +1803,13 @@ router.post('/', async (req, res) => {
+       fabricResult,
+       phashResult: phashResult || null,
+       fusionResult,
++      channelReport: networkResult ? networkResult.channels.map(c => ({
++        channel: c.channel,
++        status: c.status,
++        lr: c.lr ?? null,
++        ...(c.error ? { error: c.error } : {}),
++        ...(c.reading ? { reading: c.reading } : {}),
++      })) : null,
+       verdict,
+       corrections,
+       suggestionAgent,
+diff --git a/backend/scripts/calibrate.py b/backend/scripts/calibrate.py
+new file mode 100644
+index 0000000..efea27b
+--- /dev/null
++++ b/backend/scripts/calibrate.py
+@@ -0,0 +1,82 @@
++#!/usr/bin/env python3
++"""Calibration harness for the verification-network channel thresholds.
++
++Turns "reasoned estimates" into "calibrated on N labelled pairs". Feed it a
++JSON file of labelled pairs and it reports, per channel, how well the current
++thresholds separate the classes and where the optimal cut sits.
++
++Labelled-pairs file format (build it in an afternoon from your own photos):
++
++  [
++    {"anchor": ["front.jpg","back.jpg","closeup.jpg"],
++     "catalog": ["cat_front.jpg","cat_back.jpg","cat_closeup.jpg"],
++     "hint": "kurti",
++     "label": "same"},         // same physical garment, different shots
++    {"anchor": [...], "catalog": [...], "hint": "top",
++     "label": "different"}     // HARD negatives: same category, different product
++  ]
++
++Include hard negatives — same-category-different-product is the fraud case,
++and thresholds tuned only on easy negatives will overclaim.
++
++Usage:  python scripts/calibrate.py pairs.json
++"""
++
++import json
++import sys
++import os
++
++sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "services"))
++
++from verification_math import compare_color_sets, compare_texture  # noqa: E402
++
++
++def best_cut(same_vals, diff_vals):
++    """Threshold minimising total classification error (same below, diff above)."""
++    candidates = sorted(set(same_vals + diff_vals))
++    best = (None, len(same_vals) + len(diff_vals))
++    for c in candidates:
++        errors = sum(1 for v in same_vals if v > c) + sum(1 for v in diff_vals if v <= c)
++        if errors < best[1]:
++            best = (c, errors)
++    return best
++
++
++def main(path):
++    pairs = json.load(open(path))
++    color_same, color_diff = [], []
++    period_same = []
++
++    for i, pair in enumerate(pairs):
++        label = pair["label"]
++        c = compare_color_sets(pair["anchor"], pair["catalog"], pair.get("hint"))
++        if c.get("success"):
++            (color_same if label == "same" else color_diff).append(c["delta_e_median"])
++        t = compare_texture(pair["anchor"][0], pair["catalog"][0])
++        if t.get("success") and t.get("applicable") and "period_ratio" in t and label == "same":
++            period_same.append(abs(1 - t["period_ratio"]))
++        print(f"[{i + 1}/{len(pairs)}] {label}: dE={c.get('delta_e_median')} "
++              f"period_dev={abs(1 - t['period_ratio']) if t.get('success') and 'period_ratio' in t else 'n/a'}")
++
++    print("\n── Colour channel (CIEDE2000 kL=2, median across views) ──")
++    print(f"  same-garment:      n={len(color_same)}  values={sorted(color_same)}")
++    print(f"  different-garment: n={len(color_diff)}  values={sorted(color_diff)}")
++    if color_same and color_diff:
++        cut, errors = best_cut(color_same, color_diff)
++        print(f"  optimal cut: dE ≈ {cut}  (misclassifies {errors}/{len(color_same) + len(color_diff)})")
++        print("  → update COLOR_BANDS in services/verification_channels.js accordingly.")
++
++    print("\n── Print-geometry channel (period deviation |1 - ratio|) ──")
++    if period_same:
++        print(f"  same-garment deviations: {sorted(period_same)}")
++        print(f"  suggested 'preserved' band: max deviation ≈ {max(period_same) * 1.3:.2f}")
++        print("  → update PERIOD_BANDS in services/verification_channels.js accordingly.")
++    else:
++        print("  no periodic same-garment pairs in this set — add striped/printed pairs.")
++
++
++if __name__ == "__main__":
++    if len(sys.argv) != 2:
++        print(__doc__)
++        sys.exit(1)
++    main(sys.argv[1])
+diff --git a/backend/scripts/fetch_models.py b/backend/scripts/fetch_models.py
+new file mode 100644
+index 0000000..60290bb
+--- /dev/null
++++ b/backend/scripts/fetch_models.py
+@@ -0,0 +1,59 @@
++#!/usr/bin/env python3
++"""One-command model fetch for the verification-network deep channels.
++
++The worker (services/ai_server.py) boots and serves the math channels —
++colour delta-E and FFT print geometry — with no downloads at all. Running
++this script adds the deep channels:
++
++  DINOv2-S/14        (~90 MB)  identity channel: same-object embeddings
++  Marqo-FashionCLIP  (~600 MB) identity + zero-shot attribute channel
++
++Weights land in the standard Hugging Face cache, so the worker finds them
++automatically on its next start. Anonymous downloads work; set HF_TOKEN only
++if you ever hit anonymous rate limits.
++
++Usage:  python scripts/fetch_models.py
++"""
++
++import sys
++
++
++def fetch(label, fn):
++    print(f"→ {label} ...")
++    try:
++        fn()
++        print(f"  OK: {label}")
++        return True
++    except Exception as e:
++        print(f"  FAILED: {label}: {e}")
++        return False
++
++
++def fetch_dinov2():
++    import timm
++    model = timm.create_model("vit_small_patch14_dinov2.lvd142m", pretrained=True, num_classes=0)
++    assert model is not None
++
++
++def fetch_fashionclip():
++    import open_clip
++    model, _, _ = open_clip.create_model_and_transforms("hf-hub:Marqo/marqo-fashionCLIP")
++    assert model is not None
++
++
++def main():
++    results = [
++        fetch("DINOv2-S/14 (identity embeddings)", fetch_dinov2),
++        fetch("Marqo-FashionCLIP (fashion embeddings + zero-shot)", fetch_fashionclip),
++    ]
++    if all(results):
++        print("\nAll deep-channel weights cached. Restart the worker:  python services/ai_server.py")
++        return 0
++    print("\nSome downloads failed — the worker still runs with whatever is cached, "
++          "plus the always-on math channels. Re-run this script on a network that "
++          "can reach huggingface.co.")
++    return 1
++
++
++if __name__ == "__main__":
++    sys.exit(main())
+diff --git a/backend/server.js b/backend/server.js
+index 97175a5..9f3c8fa 100644
+--- a/backend/server.js
++++ b/backend/server.js
+@@ -88,19 +88,25 @@ app.get('/api/health', async (req, res) => {
+ 
+   // Layers 1–4 are local and decision-critical. Layer 5 (text generation) is
+   // enhancement-only, so a missing LLM key degrades but never fails the check.
+-  const criticalOk = database.ok && ml.reachable && ml.clip_loaded !== false
+-  const degraded = criticalOk && (ml.vit_loaded === false || ml.clip_loaded === null)
++  // A worker in math-only mode (no torch stack) still serves colour ΔE and
++  // FFT print geometry — decision-grade evidence — so it counts as degraded,
++  // not down.
++  const mathChannels = ml.capabilities?.color_delta_e === true
++  const criticalOk = database.ok && ml.reachable && (ml.clip_loaded !== false || mathChannels)
++  const degraded = criticalOk && (ml.vit_loaded === false || ml.clip_loaded !== true)
+ 
+   res.status(criticalOk ? 200 : 503).json({
+     status: criticalOk ? (degraded ? 'degraded' : 'ok') : 'unhealthy',
+     checks: {
+       database,
+       ml_worker: {
+-        ok: ml.reachable && ml.clip_loaded !== false,
++        ok: ml.reachable && (ml.clip_loaded !== false || mathChannels),
+         url: ml.url,
+         reachable: ml.reachable,
+         clip_loaded: ml.clip_loaded,
+         vit_loaded: ml.vit_loaded,
++        dino_loaded: ml.dino_loaded ?? null,
++        capabilities: ml.capabilities || null,
+         device: ml.device || null,
+         detail: ml.detail,
+       },
+diff --git a/backend/services/ai_server.py b/backend/services/ai_server.py
+index 8ffa22e..624a3f4 100644
+--- a/backend/services/ai_server.py
++++ b/backend/services/ai_server.py
+@@ -1,22 +1,56 @@
+ import os
+ import uuid
+ import json
+-import torch
+-import torch.nn as nn
+ from fastapi import FastAPI, HTTPException
+ from fastapi.middleware.cors import CORSMiddleware
+ from pydantic import BaseModel
+ from typing import List, Dict, Any, Optional
+ from PIL import Image
+-import open_clip
+-import imagehash
+-from rembg import remove
+ import numpy as np
+-import timm
+-from torchvision import transforms
+-from safetensors.torch import load_file
+ from contextlib import asynccontextmanager
+ 
++# ── Capability-guarded imports ───────────────────────────────────────
++# The worker must boot with whatever is installed and say precisely what it
++# can do. A missing torch stack disables the deep channels; the math channels
++# (colour delta-E, FFT print geometry) need only numpy + Pillow and are the
++# reason this file no longer hard-crashes on a lean machine.
++try:
++    import torch
++    import torch.nn as nn
++    TORCH_OK = True
++except ImportError:
++    torch = None
++    nn = None
++    TORCH_OK = False
++
++try:
++    import open_clip
++    OPEN_CLIP_OK = TORCH_OK
++except ImportError:
++    OPEN_CLIP_OK = False
++
++try:
++    import imagehash
++    IMAGEHASH_OK = True
++except ImportError:
++    IMAGEHASH_OK = False
++
++try:
++    from rembg import remove
++    REMBG_OK = True
++except ImportError:
++    REMBG_OK = False
++
++try:
++    import timm
++    from torchvision import transforms
++    from safetensors.torch import load_file
++    TIMM_OK = TORCH_OK
++except ImportError:
++    TIMM_OK = False
++
++from verification_math import compare_color_sets, compare_colors, compare_texture
++
+ # Global models
+ clip_model = None
+ clip_preprocess = None
+@@ -28,6 +62,9 @@ vit_transform = None
+ vit_meta = None
+ vit_device = None
+ 
++dino_model = None
++dino_transform = None
++
+ # ZERO_SHOT_ATTRIBUTES (from clip_similarity_cli.py)
+ ZERO_SHOT_ATTRIBUTES = {
+     "pattern_type": [
+@@ -95,31 +132,52 @@ PROMPT_TEMPLATES = {
+ async def lifespan(app: FastAPI):
+     global clip_model, clip_preprocess, clip_tokenizer, use_hf_clip
+     global vit_model, vit_transform, vit_meta, vit_device
+-    
++    global dino_model, dino_transform
++
+     # Load CLIP Model — try FashionCLIP via transformers, fallback to best open_clip
+-    try:
+-        print("[AI-SERVER] Attempting to load Marqo/marqo-fashionCLIP via open_clip...")
+-        clip_model, _, clip_preprocess = open_clip.create_model_and_transforms('hf-hub:Marqo/marqo-fashionCLIP')
+-        clip_tokenizer = open_clip.get_tokenizer('hf-hub:Marqo/marqo-fashionCLIP')
+-        clip_model.eval()
+-        use_hf_clip = False
+-        print("[AI-SERVER] OK: FashionCLIP loaded via open_clip")
+-    except Exception as e:
+-        print(f"[AI-SERVER] FashionCLIP not available ({e}), using best open_clip model...")
+-        clip_model, _, clip_preprocess = open_clip.create_model_and_transforms(
+-            'ViT-B-32', pretrained='datacomp_xl_s13b_b90k'
+-        )
+-        clip_tokenizer = open_clip.get_tokenizer('ViT-B-32')
+-        clip_model.eval()
+-        use_hf_clip = False
+-        print("[AI-SERVER] OK: CLIP ViT-B-32 (datacomp_xl) loaded")
+-    
++    if OPEN_CLIP_OK:
++        try:
++            print("[AI-SERVER] Attempting to load Marqo/marqo-fashionCLIP via open_clip...")
++            clip_model, _, clip_preprocess = open_clip.create_model_and_transforms('hf-hub:Marqo/marqo-fashionCLIP')
++            clip_tokenizer = open_clip.get_tokenizer('hf-hub:Marqo/marqo-fashionCLIP')
++            clip_model.eval()
++            use_hf_clip = False
++            print("[AI-SERVER] OK: FashionCLIP loaded via open_clip")
++        except Exception as e:
++            print(f"[AI-SERVER] FashionCLIP not available ({e}), using best open_clip model...")
++            try:
++                clip_model, _, clip_preprocess = open_clip.create_model_and_transforms(
++                    'ViT-B-32', pretrained='datacomp_xl_s13b_b90k'
++                )
++                clip_tokenizer = open_clip.get_tokenizer('ViT-B-32')
++                clip_model.eval()
++                use_hf_clip = False
++                print("[AI-SERVER] OK: CLIP ViT-B-32 (datacomp_xl) loaded")
++            except Exception as e2:
++                print(f"[AI-SERVER] No CLIP model could be loaded ({e2}). CLIP endpoints disabled.")
++    else:
++        print("[AI-SERVER] torch/open_clip not installed — CLIP endpoints disabled, math channels still live.")
++
++    # DINOv2 — instance-level identity embeddings (C1). Small model, big deal:
++    # trained without text to recognise THE SAME OBJECT across views, which is
++    # the question catalog fraud actually poses. ~90 MB from the HF hub.
++    if TIMM_OK:
++        try:
++            print("[AI-SERVER] Loading DINOv2-S/14 via timm...")
++            dino_model = timm.create_model('vit_small_patch14_dinov2.lvd142m', pretrained=True, num_classes=0)
++            dino_model.eval()
++            cfg = timm.data.resolve_model_data_config(dino_model)
++            dino_transform = timm.data.create_transform(**cfg, is_training=False)
++            print("[AI-SERVER] OK: DINOv2-S/14 loaded")
++        except Exception as e:
++            print(f"[AI-SERVER] DINOv2 unavailable ({e}) — identity channel will use CLIP only.")
++
+     # Load ViT Model
+     script_dir = os.path.dirname(os.path.abspath(__file__))
+     metadata_path = os.path.join(script_dir, 'model_metadata.json')
+     weights_path = os.path.join(script_dir, 'model_best.safetensors')
+-    
+-    if os.path.exists(metadata_path) and os.path.exists(weights_path):
++
++    if TIMM_OK and os.path.exists(metadata_path) and os.path.exists(weights_path):
+         with open(metadata_path, 'r') as f:
+             vit_meta = json.load(f)
+             
+@@ -186,17 +244,31 @@ def health():
+     """
+     clip_ok = clip_model is not None and clip_preprocess is not None and clip_tokenizer is not None
+     vit_ok = vit_model is not None and vit_transform is not None and vit_meta is not None
++    dino_ok = dino_model is not None
++    # Math channels have no model dependency at all — if this process is
++    # answering, colour delta-E and print geometry are live.
+     if clip_ok and vit_ok:
+         status = "ok"
+-    elif clip_ok or vit_ok:
++    elif clip_ok or vit_ok or dino_ok:
+         status = "degraded"
+     else:
+-        status = "unavailable"
++        status = "math_only"
+ 
+     return {
+         "status": status,
+         "clip_loaded": clip_ok,
+         "vit_loaded": vit_ok,
++        "dino_loaded": dino_ok,
++        "capabilities": {
++            "color_delta_e": True,
++            "print_geometry": True,
++            "identity_embeddings": dino_ok or clip_ok,
++            "clip_similarity": clip_ok,
++            "clip_zero_shot": clip_ok,
++            "vit_attributes": vit_ok,
++            "segmentation": REMBG_OK,
++            "phash": IMAGEHASH_OK,
++        },
+         "clip_model": ("transformers-CLIP" if use_hf_clip else "open_clip") if clip_ok else None,
+         "vit_labels": sorted(vit_meta["label_maps"].keys()) if vit_ok else None,
+         "device": str(vit_device) if vit_device is not None else None,
+@@ -407,6 +479,77 @@ def segment(req: ImageReq):
+     except Exception as e:
+         return {"error": str(e)}
+ 
++# ── Verification-network channels ────────────────────────────────────
++
++class ColorSetReq(BaseModel):
++    anchor_paths: List[str]
++    catalog_paths: List[str]
++    garment_hint: Optional[str] = None
++
++class PairPathReq(BaseModel):
++    anchor_path: str
++    catalog_path: str
++
++@app.post("/channel/color")
++def channel_color(req: ColorSetReq):
++    """C2 — colour fidelity. Per-view LAB palettes + CIEDE2000 (kL=2 textile
++    mode), median across views. Pure math; needs no model weights."""
++    try:
++        return compare_color_sets(req.anchor_paths, req.catalog_paths, req.garment_hint)
++    except Exception as e:
++        return {"success": False, "error": str(e)}
++
++@app.post("/channel/texture")
++def channel_texture(req: PairPathReq):
++    """C3 — print geometry. FFT dominant period in cycles per garment width
++    (camera-distance invariant) + texture energy. Pure math."""
++    try:
++        return compare_texture(req.anchor_path, req.catalog_path)
++    except Exception as e:
++        return {"success": False, "error": str(e)}
++
++def _embed_image(path, model, transform):
++    img = Image.open(path).convert("RGB")
++    x = transform(img).unsqueeze(0)
++    with torch.no_grad():
++        feats = model(x)
++    feats = feats / feats.norm(dim=-1, keepdim=True)
++    return feats
++
++@app.post("/channel/identity")
++def channel_identity(req: PairPathReq):
++    """C1 — instance identity. DINOv2 (same-object) and CLIP (same-category)
++    cosines, reported separately AND as one agreement-weighted family score —
++    the fusion layer must treat these as ONE channel, never two."""
++    try:
++        readings = {}
++        if dino_model is not None:
++            a = _embed_image(req.anchor_path, dino_model, dino_transform)
++            c = _embed_image(req.catalog_path, dino_model, dino_transform)
++            readings["dino_similarity"] = round(float((a @ c.T).item()), 4)
++        if clip_model is not None:
++            a = encode_image_clip(Image.open(req.anchor_path).convert("RGB"))
++            c = encode_image_clip(Image.open(req.catalog_path).convert("RGB"))
++            readings["clip_similarity"] = round(float((a @ c.T).item()), 4)
++        if not readings:
++            return {"success": False, "error": "no embedding model loaded"}
++
++        values = list(readings.values())
++        family = sum(values) / len(values)
++        # Two models agreeing is worth more than either alone; disagreement is
++        # a reason for caution, not an average. The spread is reported so the
++        # fusion layer can dampen the family score when the cousins argue.
++        spread = max(values) - min(values) if len(values) > 1 else 0.0
++        return {
++            "success": True,
++            **readings,
++            "family_similarity": round(family, 4),
++            "family_spread": round(spread, 4),
++            "models_used": len(values),
++        }
++    except Exception as e:
++        return {"success": False, "error": str(e)}
++
+ @app.post("/phash")
+ def phash(req: PhashReq):
+     try:
+diff --git a/backend/services/fusion.js b/backend/services/fusion.js
+index 014d6e8..4c912d4 100644
+--- a/backend/services/fusion.js
++++ b/backend/services/fusion.js
+@@ -93,6 +93,63 @@ function getAttributesLikelihoodRatio(comparison) {
+  * The returned confidence_tier says how much of the sensor suite was available,
+  * so a score built on one signal is never displayed as if it came from three.
+  */
++/**
++ * Verification-network fusion (v2).
++ *
++ * Multiplies likelihood ratios from channels with INDEPENDENT physics:
++ *   identity        — the embedding family, already collapsed to one LR
++ *                     upstream (DINOv2 + CLIP agreement-weighted). When the
++ *                     channel didn't run, the legacy raw CLIP score fills the
++ *                     same slot — the slot exists once, so the correlated
++ *                     family can never vote twice.
++ *   color_fidelity  — colourimetry (CIEDE2000, kL=2 textile)
++ *   print_geometry  — signal processing (FFT period per garment width)
++ *   phash           — perceptual hash (weak, structural)
++ *   attributes      — deterministic claim comparison (no pixels)
++ *
++ * A missing signal contributes nothing and is listed in signals_missing.
++ * The caller passes `comparison` WITHOUT the channel rows — channel evidence
++ * enters through its own LR, and feeding the same observation in twice
++ * (once as a channel, once as an attribute row) would double-count it.
++ */
++export function calculateNetworkFusion({ clipScore = null, phashDistance = null, comparison = [], channelRatios = {} }) {
++  const lrIdentity = channelRatios.identity ?? getClipLikelihoodRatio(clipScore);
++  const slots = [
++    { name: 'identity', lr: lrIdentity },
++    { name: 'color_fidelity', lr: channelRatios.color_fidelity ?? null },
++    { name: 'print_geometry', lr: channelRatios.print_geometry ?? null },
++    { name: 'phash', lr: getPhashLikelihoodRatio(phashDistance) },
++    { name: 'attributes', lr: getAttributesLikelihoodRatio(comparison) },
++  ];
++
++  let currentProb = PRIOR_MATCH_PROBABILITY;
++  for (const slot of slots) {
++    currentProb = updateProbability(currentProb, slot.lr);
++  }
++
++  const used = slots.filter(s => s.lr !== null && s.lr !== undefined).map(s => s.name);
++  const missing = slots.filter(s => s.lr === null || s.lr === undefined).map(s => s.name);
++  const confidenceTier = missing.length === 0 ? 'full' : used.length >= 3 ? 'partial' : used.length > 0 ? 'minimal' : 'none';
++
++  return {
++    probability: (currentProb * 100).toFixed(1),
++    confidence_tier: confidenceTier,
++    signals_used: used,
++    signals_missing: missing,
++    is_prior_only: used.length === 0,
++    breakdown: {
++      prior: PRIOR_MATCH_PROBABILITY,
++      lr_identity: slots[0].lr ?? null,
++      lr_color: slots[1].lr ?? null,
++      lr_print: slots[2].lr ?? null,
++      lr_phash: slots[3].lr ?? null,
++      lr_attributes: slots[4].lr ?? null,
++      // Legacy key kept for older UI reads: identity now owns this slot.
++      lr_clip: slots[0].lr ?? null,
++    },
++  };
++}
++
+ export function calculateBayesianFusion(clipScore, phashDistance, comparisonArray) {
+   let currentProb = PRIOR_MATCH_PROBABILITY;
+ 
+diff --git a/backend/services/ml_client.js b/backend/services/ml_client.js
+index 21f5953..c49a5c4 100644
+--- a/backend/services/ml_client.js
++++ b/backend/services/ml_client.js
+@@ -68,6 +68,8 @@ export async function getMlServiceHealth({ timeoutMs = HEALTH_TIMEOUT_MS } = {})
+         url: ML_SERVICE_URL,
+         clip_loaded: Boolean(body.clip_loaded),
+         vit_loaded: Boolean(body.vit_loaded),
++        dino_loaded: Boolean(body.dino_loaded),
++        capabilities: body.capabilities || null,
+         clip_model: body.clip_model || null,
+         vit_labels: body.vit_labels || null,
+         device: body.device || null,
+diff --git a/backend/services/verification_channels.js b/backend/services/verification_channels.js
+new file mode 100644
+index 0000000..095d0e9
+--- /dev/null
++++ b/backend/services/verification_channels.js
+@@ -0,0 +1,253 @@
++/**
++ * Verification-network channel orchestrator.
++ *
++ * Fans a submission out to the measurement channels served by the local ML
++ * worker, and converts each raw reading into three things the rest of the
++ * system speaks: a comparison row (for the seller-facing matrix), an optional
++ * model issue (for the verdict), and a likelihood ratio (for fusion).
++ *
++ * Channel independence is the design invariant: colour is colourimetry, print
++ * geometry is signal processing, identity is the (single, collapsed) embedding
++ * family. Each returns `lr: null` when it could not measure — never a fake
++ * neutral — and fusion treats null as "no observation".
++ *
++ * Thresholds below are reasoned defaults validated against the demo set
++ * (same-garment controls vs the known-mismatch striped dress). They are
++ * deliberately conservative on the mismatch side; scripts/calibrate.py fits
++ * them properly once labelled pairs exist.
++ */
++
++import { mlPost } from './ml_client.js'
++
++// CIEDE2000 with kL=2 (textile mode). Bands validated on the demo set:
++// same-garment controls land 0–4, the known-bad catalog lands ~9.4,
++// different products land 8.5–14+.
++const COLOR_BANDS = [
++  { max: 3.5, lr: 5.0, label: 'colour-faithful' },
++  { max: 6.5, lr: 1.6, label: 'consistent within lighting tolerance' },
++  { max: 8.5, lr: 0.7, label: 'noticeably different tone' },
++  { max: 12.0, lr: 0.22, label: 'shopper-visible colour difference' },
++  { max: Infinity, lr: 0.08, label: 'reads as a different colour' },
++]
++
++// Stripe/print repeat measured in cycles per garment width — camera-distance
++// invariant. Same-garment control ratio ≈ 0.95–1.05; the demo mismatch is 0.26.
++const PERIOD_BANDS = [
++  { maxDev: 0.18, lr: 3.5, label: 'print scale preserved' },
++  { maxDev: 0.40, lr: 1.0, label: 'print scale uncertain' },
++  { maxDev: 0.65, lr: 0.30, label: 'print scale altered' },
++  { maxDev: Infinity, lr: 0.10, label: 'print scale substantially altered' },
++]
++
++function bandFor(bands, value, key = 'max') {
++  return bands.find(band => value <= band[key])
++}
++
++export async function runColorChannel(anchorPaths, catalogPaths, garmentHint) {
++  const reading = await mlPost('/channel/color', {
++    anchor_paths: anchorPaths,
++    catalog_paths: catalogPaths,
++    garment_hint: garmentHint || null,
++  })
++  if (!reading?.success) {
++    return { channel: 'color_fidelity', status: 'unavailable', lr: null, error: reading?.error || 'worker unavailable' }
++  }
++  const de = reading.delta_e_median
++  const band = bandFor(COLOR_BANDS, de)
++  const mismatch = de > 8.5
++  const warning = !mismatch && de > 6.5
++  return {
++    channel: 'color_fidelity',
++    status: 'measured',
++    lr: band.lr,
++    reading,
++    row: {
++      key: 'color_fidelity',
++      label: 'Colour fidelity (ΔE2000)',
++      anchor_value: 'Physical garment palette',
++      catalog_value: `ΔE ${de} across ${reading.views_used} view pair(s)`,
++      declared_value: 'Catalog shows the colour a shopper receives',
++      status: mismatch ? 'mismatch' : warning ? 'warning' : 'match',
++      severity: mismatch ? 'HIGH' : warning ? 'MEDIUM' : 'LOW',
++      note: `${band.label}. Textile-standard CIEDE2000 (kL=2): under 3.5 is imperceptible, above 8.5 is a shopper-visible difference. Per view: ${reading.views.map(v => `${v.view}=${v.delta_e}`).join(', ')}.`,
++      source: 'Colourimetry-ΔE2000',
++    },
++    issue: mismatch ? {
++      attr: 'Catalog colour fidelity',
++      declared: 'Catalog colour matches the physical garment',
++      detected: `ΔE ${de} (median across views)`,
++      confidence: 'HIGH',
++      severity: 'HIGH',
++      note: 'The catalog colour tone measurably differs from the physical anchors. Replace the catalog images with renders or photos that preserve the true colour.',
++    } : null,
++  }
++}
++
++export async function runTextureChannel(anchorPath, catalogPath) {
++  const reading = await mlPost('/channel/texture', {
++    anchor_path: anchorPath,
++    catalog_path: catalogPath,
++  })
++  if (!reading?.success) {
++    return { channel: 'print_geometry', status: 'unavailable', lr: null, error: reading?.error || 'worker unavailable' }
++  }
++
++  // Both surfaces solid: the channel truthfully has nothing to add. This is
++  // an "honest not-applicable", not a pass — LR null keeps it out of fusion.
++  if (!reading.applicable) {
++    return {
++      channel: 'print_geometry',
++      status: 'not_applicable',
++      lr: null,
++      reading,
++      row: {
++        key: 'print_geometry',
++        label: 'Print geometry (FFT)',
++        anchor_value: 'No periodic print structure',
++        catalog_value: 'No periodic print structure',
++        declared_value: '—',
++        status: 'skip',
++        severity: 'LOW',
++        note: 'Both garment surfaces are solid; print-scale analysis does not apply. Colour, silhouette and attribute channels carry this verification.',
++        source: 'FFT-PrintGeometry',
++      },
++    }
++  }
++
++  if (reading.structure_mismatch) {
++    return {
++      channel: 'print_geometry',
++      status: 'measured',
++      lr: 0.15,
++      reading,
++      row: {
++        key: 'print_geometry',
++        label: 'Print geometry (FFT)',
++        anchor_value: reading.anchor_periodic ? 'Regular print structure present' : 'No periodic structure',
++        catalog_value: reading.catalog_periodic ? 'Regular print structure present' : 'No periodic structure',
++        declared_value: 'Print structure preserved',
++        status: 'mismatch',
++        severity: 'HIGH',
++        note: 'One side shows regular print structure the other lacks — the print was simplified, removed, or invented between the physical garment and the catalog.',
++        source: 'FFT-PrintGeometry',
++      },
++      issue: {
++        attr: 'Print structure',
++        declared: 'Catalog preserves the physical print',
++        detected: reading.anchor_periodic ? 'Catalog lost the periodic print' : 'Catalog invented periodic structure',
++        confidence: 'HIGH',
++        severity: 'HIGH',
++        note: 'Frequency analysis finds periodic print structure on one side only. Replace the catalog view so the real print survives.',
++      },
++    }
++  }
++
++  const deviation = Math.abs(1 - reading.period_ratio)
++  const band = bandFor(PERIOD_BANDS, deviation, 'maxDev')
++  const mismatch = deviation > 0.40
++  return {
++    channel: 'print_geometry',
++    status: 'measured',
++    lr: band.lr,
++    reading,
++    row: {
++      key: 'print_geometry',
++      label: 'Print geometry (FFT)',
++      anchor_value: `${reading.anchor.cycles_per_garment_width} repeats per garment width`,
++      catalog_value: `${reading.catalog.cycles_per_garment_width} repeats per garment width (ratio ${reading.period_ratio})`,
++      declared_value: 'Print scale preserved',
++      status: mismatch ? 'mismatch' : deviation > 0.18 ? 'warning' : 'match',
++      severity: mismatch ? 'HIGH' : deviation > 0.18 ? 'MEDIUM' : 'LOW',
++      note: `${band.label}. The repeat is measured in cycles per garment width, so camera distance cannot fake it. Orientation delta ${reading.orientation_delta_deg}°.`,
++      source: 'FFT-PrintGeometry',
++    },
++    issue: mismatch ? {
++      attr: 'Print scale',
++      declared: 'Catalog preserves the physical print scale',
++      detected: `Catalog repeat is ${Math.round(reading.period_ratio * 100)}% of the physical repeat`,
++      confidence: 'HIGH',
++      severity: 'HIGH',
++      note: `The catalog print repeats ${reading.period_ratio < 1 ? 'far fewer' : 'far more'} times across the garment than the physical fabric does — the pattern a shopper sees is not the pattern they receive.`,
++    } : null,
++  }
++}
++
++export async function runIdentityChannel(anchorPath, catalogPath) {
++  const reading = await mlPost('/channel/identity', {
++    anchor_path: anchorPath,
++    catalog_path: catalogPath,
++  })
++  if (!reading?.success) {
++    return { channel: 'identity', status: 'unavailable', lr: null, error: reading?.error || 'worker unavailable' }
++  }
++
++  const familyScore = reading.family_similarity
++  const spread = reading.family_spread || 0
++  // Base LR from the family score…
++  let lr
++  if (familyScore >= 0.80) lr = 8.0
++  else if (familyScore >= 0.68) lr = 3.0
++  else if (familyScore >= 0.55) lr = 1.0
++  else if (familyScore >= 0.42) lr = 0.3
++  else lr = 0.08
++  // …dampened toward neutral when the models disagree. Cousins arguing is a
++  // reason for caution, not for averaging their confidence.
++  if (reading.models_used > 1 && spread > 0.15) {
++    lr = 1 + (lr - 1) * 0.4
++  }
++
++  const mismatch = lr < 0.5
++  return {
++    channel: 'identity',
++    status: 'measured',
++    lr,
++    reading,
++    row: {
++      key: 'identity_embedding',
++      label: 'Identity (embedding family)',
++      anchor_value: 'Physical garment reference',
++      catalog_value: `family similarity ${familyScore}${reading.models_used > 1 ? ` (spread ${spread})` : ''}`,
++      declared_value: 'Same physical garment',
++      status: mismatch ? 'mismatch' : lr < 1.5 ? 'warning' : 'match',
++      severity: mismatch ? 'HIGH' : 'LOW',
++      note: reading.models_used > 1
++        ? `DINOv2 (same-object) ${reading.dino_similarity} and CLIP (same-category) ${reading.clip_similarity} fused as one channel; disagreement dampens confidence rather than averaging it away.`
++        : 'Single embedding model available — identity confidence capped accordingly.',
++      source: 'DINOv2+CLIP',
++    },
++    issue: mismatch ? {
++      attr: 'Garment identity',
++      declared: 'Catalog shows the anchored garment',
++      detected: `Embedding family similarity ${familyScore}`,
++      confidence: 'HIGH',
++      severity: 'HIGH',
++      note: 'The catalog image does not read as the same physical object as the anchors.',
++    } : null,
++  }
++}
++
++/**
++ * Run every channel the worker offers for this submission. Channels run
++ * concurrently; each degrades independently. `channels` preserves per-channel
++ * detail for the UI; `rows`/`issues`/`ratios` feed the existing pipeline.
++ */
++export async function runVerificationNetwork({ anchorPaths = [], catalogPaths = [], garmentHint = null }) {
++  const anchorFront = anchorPaths[0]
++  const catalogFront = catalogPaths[0]
++  const tasks = []
++
++  if (anchorPaths.length && catalogPaths.length) {
++    tasks.push(runColorChannel(anchorPaths, catalogPaths, garmentHint))
++    tasks.push(runTextureChannel(anchorFront, catalogFront))
++    tasks.push(runIdentityChannel(anchorFront, catalogFront))
++  }
++
++  const settled = await Promise.all(tasks)
++  const channels = settled.filter(Boolean)
++  return {
++    channels,
++    rows: channels.map(c => c.row).filter(Boolean),
++    issues: channels.map(c => c.issue).filter(Boolean),
++    ratios: Object.fromEntries(channels.map(c => [c.channel, c.lr])),
++  }
++}
+diff --git a/backend/services/verification_math.py b/backend/services/verification_math.py
+new file mode 100644
+index 0000000..ad35a78
+--- /dev/null
++++ b/backend/services/verification_math.py
+@@ -0,0 +1,489 @@
++"""
++Pure-math verification channels (numpy + Pillow only, no ML models).
++
++C2 — Colour fidelity:  garment-masked LAB clustering + CIEDE2000 delta-E.
++C3 — Print geometry:   2-D FFT dominant spatial period + texture energy.
++
++Design constraints these functions must honour:
++  * Deterministic: same inputs, same outputs, forever. Seeded init, no RNG.
++  * Scale-invariant where the physics demands it: stripe period is reported in
++    cycles per garment-width, not pixels, so a zoomed-in close-up and a
++    full-body shot of the same fabric agree.
++  * Honest about applicability: a solid garment has no periodic structure and
++    the texture channel must say "not applicable", never "match".
++"""
++
++import numpy as np
++from PIL import Image
++
++MAX_SIDE = 512
++
++
++# ── Image + mask ─────────────────────────────────────────────────────
++
++def load_rgb(path, max_side=MAX_SIDE):
++    img = Image.open(path).convert("RGB")
++    w, h = img.size
++    scale = max(w, h) / max_side
++    if scale > 1:
++        img = img.resize((int(w / scale), int(h / scale)), Image.LANCZOS)
++    return np.asarray(img, dtype=np.float64)
++
++
++def background_mask(img, k=6, border_frac=0.08):
++    """Foreground mask by interior/border cluster voting.
++
++    Anchor photos are real, unpolished seller shots — garments on floors,
++    tables, hangers — so a corner-sampled background estimate routinely fails
++    (it masked the garment itself out of the blue kurti). Instead: cluster the
++    whole image in LAB, then score each cluster by where it lives. Background
++    clusters dominate the border ring; garment clusters dominate the interior.
++    This holds for uniform studio sweeps and messy floors alike, and degrades
++    gracefully when the garment fills the frame (all clusters look interior,
++    so everything is kept).
++    """
++    h, w, _ = img.shape
++    step = max(1, int(np.sqrt(h * w / 20000)))
++    ys, xs = np.mgrid[0:h:step, 0:w:step]
++    ys, xs = ys.ravel(), xs.ravel()
++    pixels = img[ys, xs]
++    lab = srgb_to_lab(pixels)
++    centers, _ = kmeans_lab(lab, k=k)
++
++    d = np.linalg.norm(lab[:, None, :] - centers[None, :, :], axis=2)
++    labels = np.argmin(d, axis=1)
++
++    by = max(2, int(h * border_frac))
++    bx = max(2, int(w * border_frac))
++    on_border = (ys < by) | (ys >= h - by) | (xs < bx) | (xs >= w - bx)
++    keep = []
++    for i in range(centers.shape[0]):
++        in_cluster = labels == i
++        total = in_cluster.sum()
++        if total == 0:
++            continue
++        border_share = (in_cluster & on_border).sum() / max(on_border.sum(), 1)
++        interior_share = (in_cluster & ~on_border).sum() / max((~on_border).sum(), 1)
++        if interior_share > border_share * 1.3:
++            keep.append(i)
++    if not keep:
++        # Nothing separates cleanly — keep the most interior-weighted cluster
++        # rather than failing outright.
++        scores = []
++        for i in range(centers.shape[0]):
++            in_cluster = labels == i
++            interior = (in_cluster & ~on_border).sum() / max((~on_border).sum(), 1)
++            border = (in_cluster & on_border).sum() / max(on_border.sum(), 1)
++            scores.append(interior - border)
++        keep = [int(np.argmax(scores))]
++
++    # Assign every pixel of the full-resolution image to its nearest cluster.
++    full_lab = srgb_to_lab(img.reshape(-1, 3))
++    full_d = np.linalg.norm(full_lab[:, None, :] - centers[None, :, :], axis=2)
++    full_labels = np.argmin(full_d, axis=1).reshape(h, w)
++    mask = np.isin(full_labels, keep)
++    coverage = mask.mean()
++    if coverage < 0.02:
++        return None
++    return mask
++
++
++def mask_bbox(mask):
++    ys, xs = np.where(mask)
++    if len(ys) < 32:
++        return None
++    return int(ys.min()), int(ys.max()), int(xs.min()), int(xs.max())
++
++
++# ── Colour science ───────────────────────────────────────────────────
++
++def srgb_to_lab(rgb):
++    """sRGB (0-255) -> CIELAB, D65. Vectorised over an (N,3) array."""
++    c = rgb / 255.0
++    c = np.where(c > 0.04045, ((c + 0.055) / 1.055) ** 2.4, c / 12.92)
++    m = np.array([
++        [0.4124564, 0.3575761, 0.1804375],
++        [0.2126729, 0.7151522, 0.0721750],
++        [0.0193339, 0.1191920, 0.9503041],
++    ])
++    xyz = c @ m.T
++    white = np.array([0.95047, 1.0, 1.08883])
++    t = xyz / white
++    f = np.where(t > (6 / 29) ** 3, np.cbrt(t), t / (3 * (6 / 29) ** 2) + 4 / 29)
++    L = 116 * f[:, 1] - 16
++    a = 500 * (f[:, 0] - f[:, 1])
++    b = 200 * (f[:, 1] - f[:, 2])
++    return np.stack([L, a, b], axis=1)
++
++
++def ciede2000(lab1, lab2, kL=2.0):
++    """CIEDE2000 colour difference between two single LAB values.
++
++    kL=2 is the textile-industry parameterisation (ISO 105-J03): lightness
++    differences are half-weighted, because fabric lightness varies with
++    illumination and drape far more than its chromaticity does. Our photos are
++    cross-lighting by nature, so textile mode is the honest default.
++    """
++    L1, a1, b1 = lab1
++    L2, a2, b2 = lab2
++    C1 = np.hypot(a1, b1)
++    C2 = np.hypot(a2, b2)
++    Cbar = (C1 + C2) / 2
++    G = 0.5 * (1 - np.sqrt(Cbar ** 7 / (Cbar ** 7 + 25 ** 7)))
++    a1p, a2p = (1 + G) * a1, (1 + G) * a2
++    C1p, C2p = np.hypot(a1p, b1), np.hypot(a2p, b2)
++    h1p = np.degrees(np.arctan2(b1, a1p)) % 360
++    h2p = np.degrees(np.arctan2(b2, a2p)) % 360
++    dLp = L2 - L1
++    dCp = C2p - C1p
++    dh = h2p - h1p
++    if C1p * C2p == 0:
++        dhp = 0.0
++    elif abs(dh) <= 180:
++        dhp = dh
++    elif dh > 180:
++        dhp = dh - 360
++    else:
++        dhp = dh + 360
++    dHp = 2 * np.sqrt(C1p * C2p) * np.sin(np.radians(dhp) / 2)
++    Lbp = (L1 + L2) / 2
++    Cbp = (C1p + C2p) / 2
++    if C1p * C2p == 0:
++        hbp = h1p + h2p
++    elif abs(h1p - h2p) <= 180:
++        hbp = (h1p + h2p) / 2
++    elif h1p + h2p < 360:
++        hbp = (h1p + h2p + 360) / 2
++    else:
++        hbp = (h1p + h2p - 360) / 2
++    T = (1 - 0.17 * np.cos(np.radians(hbp - 30))
++         + 0.24 * np.cos(np.radians(2 * hbp))
++         + 0.32 * np.cos(np.radians(3 * hbp + 6))
++         - 0.20 * np.cos(np.radians(4 * hbp - 63)))
++    dTheta = 30 * np.exp(-(((hbp - 275) / 25) ** 2))
++    Rc = 2 * np.sqrt(Cbp ** 7 / (Cbp ** 7 + 25 ** 7))
++    Sl = 1 + (0.015 * (Lbp - 50) ** 2) / np.sqrt(20 + (Lbp - 50) ** 2)
++    Sc = 1 + 0.045 * Cbp
++    Sh = 1 + 0.015 * Cbp * T
++    Rt = -np.sin(np.radians(2 * dTheta)) * Rc
++    return float(np.sqrt(
++        (dLp / (kL * Sl)) ** 2 + (dCp / Sc) ** 2 + (dHp / Sh) ** 2
++        + Rt * (dCp / Sc) * (dHp / Sh)
++    ))
++
++
++def gray_world_gains(img, mask):
++    """Per-channel gains that equalise the masked means — cancels a global
++    illumination tint without touching genuine garment colour differences."""
++    pixels = img[mask]
++    means = pixels.mean(axis=0)
++    gray = means.mean()
++    gains = np.where(means > 1e-6, gray / means, 1.0)
++    return np.clip(gains, 0.6, 1.6)
++
++
++def kmeans_lab(lab_pixels, k=3, iters=14):
++    """Deterministic k-means. Init is farthest-point (seeded from the
++    brightest pixel), so identical inputs always give identical clusters."""
++    n = lab_pixels.shape[0]
++    if n < k * 8:
++        w = np.ones(1)
++        return lab_pixels.mean(axis=0, keepdims=True), w
++    centers = [lab_pixels[np.argmax(lab_pixels[:, 0])]]
++    for _ in range(k - 1):
++        d = np.min(
++            np.stack([np.linalg.norm(lab_pixels - c, axis=1) for c in centers]),
++            axis=0,
++        )
++        centers.append(lab_pixels[np.argmax(d)])
++    centers = np.stack(centers)
++    for _ in range(iters):
++        d = np.linalg.norm(lab_pixels[:, None, :] - centers[None, :, :], axis=2)
++        labels = np.argmin(d, axis=1)
++        new = np.stack([
++            lab_pixels[labels == i].mean(axis=0) if np.any(labels == i) else centers[i]
++            for i in range(k)
++        ])
++        if np.allclose(new, centers, atol=1e-4):
++            centers = new
++            break
++        centers = new
++    d = np.linalg.norm(lab_pixels[:, None, :] - centers[None, :, :], axis=2)
++    labels = np.argmin(d, axis=1)
++    weights = np.array([(labels == i).mean() for i in range(k)])
++    order = np.argsort(-weights)
++    return centers[order], weights[order]
++
++
++# Where a garment category lives on a standing figure, as a vertical band of
++# the frame. Anchors and catalogs are on-model or hung shots; without a parsing
++# model this prior is what separates "the crop top" from "the jeans she is
++# also wearing". SegFormer parsing supersedes this when its weights are
++# installed — this is the documented fallback, not the end state.
++GARMENT_REGION_BANDS = {
++    "top": (0.12, 0.58),
++    "bottom": (0.42, 0.96),
++    "full": (0.10, 0.90),
++}
++
++TOP_WORDS = ("top", "shirt", "tshirt", "t-shirt", "blouse", "crop", "tee", "sweater", "hoodie", "jacket")
++BOTTOM_WORDS = ("jean", "trouser", "pant", "skirt", "short", "legging", "palazzo")
++
++
++def region_band_for(garment_hint):
++    hint = str(garment_hint or "").lower()
++    if any(word in hint for word in BOTTOM_WORDS):
++        return GARMENT_REGION_BANDS["bottom"]
++    if any(word in hint for word in TOP_WORDS):
++        return GARMENT_REGION_BANDS["top"]
++    return GARMENT_REGION_BANDS["full"]
++
++
++def color_profile(path, garment_hint=None, mode="model", sample_cap=60000):
++    """Palette of the garment in a photo.
++
++    mode="closeup": the fabric fills the frame (anchor close-ups). No masking —
++    masking heuristics assume a background exists and destroy the palette when
++    it doesn't. A 4% margin trim drops incidental edges (a finger, a table).
++
++    mode="model": on-model or hung shot. Garment located by the declared
++    category's body-region band plus interior/border cluster voting.
++    """
++    img = load_rgb(path)
++    h, w, _ = img.shape
++
++    if mode == "closeup":
++        my, mx = int(h * 0.04), int(w * 0.04)
++        region = img[my:h - my, mx:w - mx]
++        mask = np.ones(region.shape[:2], dtype=bool)
++        # No chromatic normalisation here: gray-world assumes the scene
++        # averages to gray, but a closeup IS the garment — normalising would
++        # bleach the very colour being verified. Cross-lighting robustness
++        # comes from kL=2 textile delta-E instead.
++        pixels = region[mask]
++    else:
++        y0f, y1f = region_band_for(garment_hint)
++        region = img[int(h * y0f):int(h * y1f)]
++        if region.shape[0] < 24:
++            region = img
++        mask = background_mask(region)
++        if mask is None:
++            return None
++        gains = gray_world_gains(region, mask)
++        pixels = np.clip(region[mask] * gains, 0, 255)
++    if pixels.shape[0] > sample_cap:
++        step = pixels.shape[0] // sample_cap
++        pixels = pixels[::step]
++    lab = srgb_to_lab(pixels)
++    centers, weights = kmeans_lab(lab, k=3)
++    return {"centers": centers, "weights": weights, "coverage": float(mask.mean())}
++
++
++def compare_colors(anchor_path, catalog_path, garment_hint=None, anchor_mode="closeup", catalog_mode="model"):
++    """Weighted greedy palette match between the two garments' LAB clusters.
++
++    delta_e_weighted is the shopper-facing number: <2 imperceptible, 2-6 close,
++    6-12 noticeably different tone, >12 reads as a different colour.
++    """
++    pa = color_profile(anchor_path, garment_hint, mode=anchor_mode)
++    pc = color_profile(catalog_path, garment_hint, mode=catalog_mode)
++    if pa is None or pc is None:
++        return {"success": False, "error": "garment mask could not be established"}
++
++    ca, wa = pa["centers"], pa["weights"]
++    cc, wc = pc["centers"], pc["weights"]
++
++    # Asymmetric question, on purpose: does every significant colour of the
++    # PHYSICAL garment survive into the catalog? Each significant anchor
++    # cluster finds its nearest catalog cluster (sharing allowed). Extra
++    # catalog-only clusters — a model's skin, a background remnant — are
++    # ignored rather than punished; a missing physical colour is punished.
++    total_w = 0.0
++    acc = 0.0
++    pairs = []
++    for i in range(ca.shape[0]):
++        w = float(wa[i])
++        if w < 0.12:
++            continue  # noise cluster, not a shopper-visible colour
++        des = [ciede2000(ca[i], cc[j]) for j in range(cc.shape[0])]
++        j = int(np.argmin(des))
++        best_de = des[j]
++        acc += best_de * w
++        total_w += w
++        pairs.append({
++            "anchor_lab": [round(float(v), 1) for v in ca[i]],
++            "catalog_lab": [round(float(v), 1) for v in cc[j]],
++            "anchor_weight": round(w, 3),
++            "delta_e": round(best_de, 2),
++        })
++    de_weighted = acc / total_w if total_w else None
++    # Dominant-cluster delta E on its own: the single most shopper-visible tone.
++    de_dominant = pairs[0]["delta_e"] if pairs else None
++    return {
++        "success": True,
++        "delta_e_weighted": round(de_weighted, 2) if de_weighted is not None else None,
++        "delta_e_dominant": de_dominant,
++        "pairs": pairs,
++        "anchor_coverage": round(pa["coverage"], 3),
++        "catalog_coverage": round(pc["coverage"], 3),
++        "method": "LAB k-means + CIEDE2000, gray-world normalised",
++    }
++
++
++def compare_color_sets(anchor_paths, catalog_paths, garment_hint=None):
++    """Per-view colour comparison across the two evidence sets.
++
++    Views are compared like-with-like — front↔front, back↔back,
++    closeup↔closeup — because same-view pairs share framing and usually
++    lighting, which is what makes a delta-E meaningful. The set verdict is the
++    MEDIAN of per-view delta-Es, so one occluded or badly lit view (hair over
++    the back, a shadowed closeup) cannot dominate the reading either way.
++    """
++    view_plan = [
++        ("front", 0, 0, "model", "model"),
++        ("back", 1, 1, "model", "model"),
++        ("closeup", 2, 2, "closeup", "closeup"),
++    ]
++    views = []
++    for name, ai, ci, anchor_mode, catalog_mode in view_plan:
++        if ai >= len(anchor_paths) or ci >= len(catalog_paths):
++            continue
++        r = compare_colors(
++            anchor_paths[ai], catalog_paths[ci], garment_hint,
++            anchor_mode=anchor_mode, catalog_mode=catalog_mode,
++        )
++        if r.get("success") and r.get("delta_e_weighted") is not None:
++            views.append({"view": name, "delta_e": r["delta_e_weighted"], "detail": r})
++    if not views:
++        return {"success": False, "error": "no view pair produced a usable colour reading"}
++    des = sorted(v["delta_e"] for v in views)
++    median = des[len(des) // 2] if len(des) % 2 else (des[len(des) // 2 - 1] + des[len(des) // 2]) / 2
++    return {
++        "success": True,
++        "delta_e_median": round(median, 2),
++        "views": [{"view": v["view"], "delta_e": v["delta_e"]} for v in views],
++        "views_used": len(views),
++        "method": "per-view LAB k-means + CIEDE2000 (kL=2 textile), median across views",
++    }
++
++
++# ── Print / texture geometry ─────────────────────────────────────────
++
++FFT_WINDOW = 256
++
++
++def texture_features(path):
++    """Dominant periodic structure of the garment surface.
++
++    Reports the stripe/print repeat as cycles per garment-width, which is
++    invariant to how far away the camera was — the property a catalog render
++    must preserve for the fabric to look right.
++    """
++    img = load_rgb(path)
++    mask = background_mask(img)
++    if mask is None:
++        return None
++    bbox = mask_bbox(mask)
++    if bbox is None:
++        return None
++    y0, y1, x0, x1 = bbox
++    if (y1 - y0) < 32 or (x1 - x0) < 32:
++        return None
++    gray = img.mean(axis=2)
++    crop = gray[y0:y1 + 1, x0:x1 + 1]
++    crop_mask = mask[y0:y1 + 1, x0:x1 + 1]
++    garment_width = x1 - x0 + 1
++
++    # Neutralise background inside the bbox so it contributes no structure.
++    mean_val = crop[crop_mask].mean()
++    crop = np.where(crop_mask, crop, mean_val)
++
++    # Resize to the analysis window via PIL for clean interpolation.
++    pil = Image.fromarray(np.clip(crop, 0, 255).astype(np.uint8))
++    pil = pil.resize((FFT_WINDOW, FFT_WINDOW), Image.LANCZOS)
++    w = np.asarray(pil, dtype=np.float64)
++    w = w - w.mean()
++    # Hann window to suppress edge artefacts.
++    hann = np.hanning(FFT_WINDOW)
++    w = w * hann[:, None] * hann[None, :]
++
++    spec = np.abs(np.fft.fftshift(np.fft.fft2(w)))
++    c = FFT_WINDOW // 2
++    yy, xx = np.mgrid[0:FFT_WINDOW, 0:FFT_WINDOW]
++    rr = np.hypot(yy - c, xx - c)
++    # Exclude DC and near-DC (global shading) and the extreme edge.
++    valid = (rr >= 3) & (rr <= c - 2)
++    spec_v = np.where(valid, spec, 0)
++
++    peak_idx = np.unravel_index(np.argmax(spec_v), spec_v.shape)
++    peak_r = rr[peak_idx]
++    peak_mag = spec_v[peak_idx]
++    background_mag = spec_v[valid].mean()
++    periodicity = float(peak_mag / (background_mag + 1e-9))
++
++    # The garment bbox was resized to exactly one analysis window, so a peak at
++    # radius r is r cycles per window == r cycles per garment width. That makes
++    # the number camera-distance-invariant, which is the whole point.
++    cycles_per_garment = float(peak_r)
++
++    orientation = float(np.degrees(np.arctan2(peak_idx[0] - c, peak_idx[1] - c))) % 180
++
++    # Texture energy: gradient magnitude mean over the masked garment. This is
++    # the print-coverage signal (a removed back print collapses it).
++    gy, gx = np.gradient(gray)
++    grad = np.hypot(gx, gy)
++    texture_energy = float(grad[mask].mean())
++
++    return {
++        "cycles_per_garment_width": round(cycles_per_garment, 2),
++        "periodicity_strength": round(periodicity, 2),
++        "orientation_deg": round(orientation, 1),
++        "texture_energy": round(texture_energy, 3),
++    }
++
++
++# A peak this many times the spectrum mean means genuinely periodic structure
++# (stripes, checks, regular motifs) rather than noise.
++PERIODIC_THRESHOLD = 18.0
++
++
++def compare_texture(anchor_path, catalog_path):
++    fa = texture_features(anchor_path)
++    fc = texture_features(catalog_path)
++    if fa is None or fc is None:
++        return {"success": False, "error": "garment region could not be isolated"}
++
++    a_periodic = fa["periodicity_strength"] >= PERIODIC_THRESHOLD
++    c_periodic = fc["periodicity_strength"] >= PERIODIC_THRESHOLD
++
++    result = {
++        "success": True,
++        "anchor": fa,
++        "catalog": fc,
++        "anchor_periodic": a_periodic,
++        "catalog_periodic": c_periodic,
++        "method": "2-D FFT dominant period (cycles per garment width) + gradient texture energy",
++    }
++
++    if a_periodic and c_periodic:
++        ratio = fc["cycles_per_garment_width"] / max(fa["cycles_per_garment_width"], 1e-6)
++        result["period_ratio"] = round(ratio, 3)
++        result["orientation_delta_deg"] = round(
++            min(
++                abs(fa["orientation_deg"] - fc["orientation_deg"]),
++                180 - abs(fa["orientation_deg"] - fc["orientation_deg"]),
++            ), 1)
++        result["applicable"] = True
++    elif a_periodic != c_periodic:
++        # One has regular structure the other lacks — the "print got simplified
++        # or invented" case. Strong evidence in its own right.
++        result["applicable"] = True
++        result["structure_mismatch"] = True
++    else:
++        # Both solid: the channel truthfully has nothing to say about print
++        # scale. Texture energy ratio still speaks to overall surface detail.
++        result["applicable"] = False
++
++    energy_ratio = fc["texture_energy"] / max(fa["texture_energy"], 1e-6)
++    result["texture_energy_ratio"] = round(energy_ratio, 3)
++    return result
+diff --git a/backend/test_e2e.js b/backend/test_e2e.js
+index 39d5a41..a2e4d20 100644
+--- a/backend/test_e2e.js
++++ b/backend/test_e2e.js
+@@ -56,10 +56,14 @@ async function testAll() {
+     assert('Health reports a status', typeof body.status === 'string', true);
+     assert('Health reports database check', typeof body.checks?.database?.ok === 'boolean', true);
+     assert('Health reports ml_worker check', typeof body.checks?.ml_worker?.reachable === 'boolean', true);
++    // A worker serving only the math channels (colour ΔE, FFT) is degraded,
++    // not down — it still contributes decision-grade evidence.
++    const mlUsable = body.checks.ml_worker.reachable
++      && (body.checks.ml_worker.clip_loaded !== false || body.checks.ml_worker.capabilities?.color_delta_e === true);
+     assert(
+       'Status is consistent with the ML worker check',
+       body.status === 'unhealthy',
+-      !(body.checks.database.ok && body.checks.ml_worker.reachable && body.checks.ml_worker.clip_loaded !== false)
++      !(body.checks.database.ok && mlUsable)
+     );
+     console.log(`    (observed: ${body.status}; ML worker reachable=${body.checks.ml_worker.reachable})`);
+   } catch(e) { fail++; console.log('  ❌ Health:', e.message); }
+diff --git a/frontend/src/pages/Verify.jsx b/frontend/src/pages/Verify.jsx
+index 0fba569..438c776 100644
+--- a/frontend/src/pages/Verify.jsx
++++ b/frontend/src/pages/Verify.jsx
+@@ -1527,7 +1527,13 @@ export default function Verify() {
+             {/* A missing signal has a null likelihood ratio. Rendering that as
+                 "0.00" read as overwhelming evidence AGAINST a match, which is
+                 the opposite of "we did not observe this". */}
+-            <div><span>Visual similarity</span><strong>{formatLikelihoodRatio(v.fusionResult.breakdown?.lr_clip, 'CLIP')}</strong></div>
++            <div><span>Identity</span><strong>{formatLikelihoodRatio(v.fusionResult.breakdown?.lr_identity ?? v.fusionResult.breakdown?.lr_clip, 'Embed')}</strong></div>
++            {v.fusionResult.breakdown?.lr_color !== undefined && (
++              <div><span>Colour ΔE2000</span><strong>{formatLikelihoodRatio(v.fusionResult.breakdown?.lr_color, 'Colour')}</strong></div>
++            )}
++            {v.fusionResult.breakdown?.lr_print !== undefined && (
++              <div><span>Print geometry</span><strong>{formatLikelihoodRatio(v.fusionResult.breakdown?.lr_print, 'FFT')}</strong></div>
++            )}
+             <div><span>View consistency</span><strong>{formatLikelihoodRatio(v.fusionResult.breakdown?.lr_phash, 'pHash')}</strong></div>
+             <div><span>Claim consistency</span><strong>{formatLikelihoodRatio(v.fusionResult.breakdown?.lr_attributes, 'Attribute')}</strong></div>
+           </div>
+-- 
+2.43.0
+
+
+From d741ab4901596f2ece9887bed73caf6133e2f2b7 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sun, 9 Aug 2026 21:32:21 +0000
+Subject: [PATCH 3/3] Redesign the verification results page: one verdict, one
+ fix list
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Restructures the results page around a simple reading order — what happened,
+what to fix, then the evidence — and removes the repetition where the same
+issue appeared in three different boxes. Verified in a real browser by driving
+the full CSV flow (login -> workflow chooser -> CSV upload -> row select ->
+anchor upload -> verification) with Playwright against the kurti fixture.
+
+Verdict hero (replaces the old verdict bar):
+- Plain-language headline ("4 issues must be fixed before this listing goes
+  live"), status pill, and readable count chips.
+- Animated score ring that states its provenance: "Estimated from the stored
+  evidence record" for hash-bound fixture results vs "Measured live from your
+  images" for general uploads — the estimate/measured distinction was
+  previously invisible.
+
+One fix list instead of three overlapping cards:
+- The correction co-pilot card and the separate consistency-copilot card
+  showed the same issues twice; the copilot's status now folds into the fix
+  list header and the duplicate card is gone.
+- Each fix item reads: field -> "Your listing says" vs "Evidence shows"
+  (strikethrough on the contradicted value) -> why it matters -> how to fix,
+  with Apply / Keep-my-value actions. Server suggestions that are
+  instructions rather than observed values render only under "How to fix",
+  never as fake evidence.
+- The evidence-record box and the sticky action bar no longer repeat the
+  verdict sentence the hero already shows; the action bar now says how many
+  blocking issues remain instead.
+
+Parity for general uploads:
+- The live comparison table is re-enabled (it was dead code behind `false &&`)
+  with the same "Focus on issues" toggle the fixture matrix has, and an
+  all-clear state.
+- The raw CLIP-fabric and pHash cards collapse into a single "Measurement
+  detail" drawer that also lists the verification-network channels with their
+  status and likelihood ratios.
+
+Readability and theme:
+- Type floor raised across the page (nothing seller-facing below ~12.5px);
+  the workflow-chooser descriptions under the two flow buttons were 12px
+  low-contrast grey and are now legible.
+- Myntra pink on white carried through hero, chips, fix items and toggles;
+  staggered entrance animation with prefers-reduced-motion respected.
+
+The three protected demo fixtures are unaffected (presentation-only change);
+the kurti fixture path was re-driven end-to-end in the browser after the
+redesign and returns the same verdict, counts and score. Frontend builds.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_013dH2GRLbUQX4E4mnweV9Bn
+---
+ frontend/src/index.css        | 219 ++++++++++++++++++++
+ frontend/src/pages/Verify.jsx | 367 +++++++++++++++++++---------------
+ 2 files changed, 423 insertions(+), 163 deletions(-)
+
+diff --git a/frontend/src/index.css b/frontend/src/index.css
+index 9b1f4d9..167f968 100644
+--- a/frontend/src/index.css
++++ b/frontend/src/index.css
+@@ -3123,3 +3123,222 @@ input:focus, select:focus, textarea:focus, .form-input:focus, .form-select:focus
+   .listing-preview-modal { grid-template-columns: 1fr; max-width: 370px; }
+   .listing-preview-modal > img { height: 220px; }
+ }
++
++/* ═══════════════════════════════════════════════════════════════════
++   VERIFICATION RESULTS REDESIGN
++   One verdict hero, one fix list, readable type, Myntra pink on white.
++   Appended last so these rules win the cascade.
++   ═══════════════════════════════════════════════════════════════════ */
++
++/* ── Readability floor: nothing seller-facing below ~12.5px ── */
++.verify-page { font-size: 14.5px; }
++.publish-readiness strong { font-size: 15px; }
++.publish-readiness span { font-size: 13.5px; }
++.verify-page .btn-sm { font-size: 13.5px; padding: 9px 16px; }
++.anchor-focus-toggle strong { font-size: 13.5px; }
++.anchor-focus-toggle small { font-size: 12.5px; }
++.anchor-evidence-table td, .anchor-evidence-table th { font-size: 13.5px; }
++.anchor-evidence-copy { font-size: 13.5px; }
++.verify-findings-note { font-size: 13px; color: var(--text-secondary); padding: 10px 16px 13px; border-bottom: 1px solid var(--border); line-height: 1.55; }
++
++/* ── Entrance: content settles in, one block after another ── */
++@keyframes verifyRise {
++  from { opacity: 0; transform: translateY(14px); }
++  to   { opacity: 1; transform: none; }
++}
++.verify-page > section,
++.verify-page > .card,
++.verify-page > details.card {
++  animation: verifyRise .5s cubic-bezier(.22,.8,.36,1) both;
++}
++.verify-page > *:nth-child(3) { animation-delay: .05s; }
++.verify-page > *:nth-child(4) { animation-delay: .12s; }
++.verify-page > *:nth-child(5) { animation-delay: .19s; }
++.verify-page > *:nth-child(6) { animation-delay: .26s; }
++.verify-page > *:nth-child(n+7) { animation-delay: .32s; }
++@media (prefers-reduced-motion: reduce) {
++  .verify-page > section, .verify-page > .card, .verify-page > details.card { animation: none; }
++  .verify-ring-fill { transition: none !important; }
++}
++
++/* ── Verdict hero ── */
++.verify-hero {
++  display: flex;
++  gap: 32px;
++  align-items: center;
++  margin-top: 20px;
++  padding: 28px 30px;
++  border-radius: 18px;
++  border: 1px solid var(--border);
++  background:
++    radial-gradient(120% 180% at 100% 0%, var(--accent-lighter) 0%, transparent 52%),
++    #fff;
++  box-shadow: 0 18px 44px rgba(40, 44, 63, 0.08);
++}
++.verify-hero.is-fail {
++  border-color: var(--danger-border);
++  background:
++    radial-gradient(120% 180% at 100% 0%, rgba(239,68,68,.07) 0%, transparent 52%),
++    #fff;
++}
++.verify-hero.is-warning {
++  border-color: var(--warning-border);
++  background:
++    radial-gradient(120% 180% at 100% 0%, rgba(245,158,11,.08) 0%, transparent 52%),
++    #fff;
++}
++.verify-hero.is-pass {
++  border-color: var(--success-border);
++  background:
++    radial-gradient(120% 180% at 100% 0%, rgba(16,185,129,.08) 0%, transparent 52%),
++    #fff;
++}
++.verify-hero-main { flex: 1; min-width: 0; }
++.verify-hero-status {
++  display: inline-flex; align-items: center; gap: 8px;
++  font-size: 13px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase;
++  padding: 6px 14px; border-radius: 999px;
++}
++.is-pass .verify-hero-status    { color: var(--success); background: var(--success-bg); }
++.is-fail .verify-hero-status    { color: var(--danger);  background: var(--danger-bg); }
++.is-warning .verify-hero-status { color: var(--warning); background: var(--warning-bg); }
++.is-unverified .verify-hero-status { color: var(--text-secondary); background: rgba(0,0,0,.05); }
++.verify-hero-headline {
++  margin: 14px 0 0;
++  font-size: clamp(20px, 2.6vw, 27px);
++  font-weight: 800;
++  letter-spacing: -0.015em;
++  line-height: 1.22;
++  text-wrap: balance;
++  color: var(--text-primary, #1c2033);
++}
++.verify-hero-reason { margin: 9px 0 0; font-size: 14.5px; line-height: 1.6; color: var(--text-secondary); max-width: 56ch; }
++.verify-hero-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
++.verify-chip {
++  display: inline-flex; align-items: center; gap: 6px;
++  font-size: 13px; font-weight: 700;
++  padding: 6px 13px; border-radius: 999px; border: 1px solid transparent;
++}
++.verify-chip.is-fail { color: var(--danger);  background: var(--danger-bg);  border-color: var(--danger-border); }
++.verify-chip.is-warn { color: #9a6700;        background: var(--warning-bg); border-color: var(--warning-border); }
++.verify-chip.is-pass { color: #0b7c5c;        background: var(--success-bg); border-color: var(--success-border); }
++.verify-chip.is-skip { color: var(--text-secondary); background: rgba(0,0,0,.045); }
++
++/* Score ring */
++.verify-hero-score { flex-shrink: 0; width: 168px; text-align: center; position: relative; }
++.verify-hero-score svg { width: 128px; height: 128px; transform: rotate(-90deg); }
++.verify-ring-track { fill: none; stroke: rgba(0,0,0,.07); stroke-width: 9; }
++.verify-ring-fill {
++  fill: none; stroke-width: 9; stroke-linecap: round;
++  transition: stroke-dashoffset 1.1s cubic-bezier(.3,.75,.35,1);
++}
++.verify-ring-fill.is-good { stroke: var(--success); }
++.verify-ring-fill.is-mid  { stroke: var(--warning); }
++.verify-ring-fill.is-low  { stroke: var(--danger); }
++.verify-hero-score-number {
++  position: absolute; top: 34px; left: 0; right: 0;
++  display: grid; gap: 0; pointer-events: none;
++}
++.verify-hero-score-number strong { font-size: 30px; font-weight: 800; letter-spacing: -0.02em; color: var(--text-primary, #1c2033); }
++.verify-hero-score-number strong em { font-style: normal; font-size: 17px; font-weight: 700; color: var(--text-secondary); }
++.verify-hero-score-number span { font-size: 11.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .09em; color: var(--text-tertiary); }
++.verify-hero-score-label { margin: 8px auto 0; font-size: 12.5px; line-height: 1.45; color: var(--text-secondary); max-width: 160px; }
++
++@media (max-width: 720px) {
++  .verify-hero { flex-direction: column; align-items: flex-start; }
++  .verify-hero-score { align-self: center; }
++}
++
++/* ── The fix list ── */
++.fix-list { margin-top: 22px; border-left: 4px solid var(--accent); }
++.fix-list-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; margin-bottom: 16px; }
++.fix-list-title { display: flex; gap: 12px; align-items: flex-start; color: var(--accent); }
++.fix-list-title strong { display: block; font-size: 17px; font-weight: 800; letter-spacing: -0.01em; color: var(--text-primary, #1c2033); }
++.fix-list-title p { margin: 3px 0 0; font-size: 13.5px; color: var(--text-secondary); }
++.fix-list-items { display: grid; gap: 12px; }
++
++.fix-item {
++  border: 1px solid var(--border);
++  border-radius: 13px;
++  padding: 16px 18px;
++  background: #fff;
++  transition: box-shadow .25s ease, transform .25s ease, border-color .25s ease;
++}
++.fix-item:hover { box-shadow: 0 10px 26px rgba(40,44,63,.09); transform: translateY(-1px); }
++.fix-item.is-critical { border-left: 3px solid var(--danger); }
++.fix-item.is-accepted { border-color: var(--success-border); background: linear-gradient(0deg, rgba(16,185,129,.045), rgba(16,185,129,.045)), #fff; }
++.fix-item.is-ignored { opacity: .62; }
++.fix-item-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
++.fix-item-field { font-size: 15px; font-weight: 750; text-transform: capitalize; color: var(--text-primary, #1c2033); }
++.fix-item-state { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 800; padding: 3px 10px; border-radius: 999px; }
++.fix-item-state.is-blocker  { color: var(--danger); background: var(--danger-bg); }
++.fix-item-state.is-accepted { color: #0b7c5c; background: var(--success-bg); }
++.fix-item-state.is-ignored  { color: var(--text-secondary); background: rgba(0,0,0,.05); }
++
++.fix-item-pair {
++  display: flex; align-items: stretch; gap: 12px; flex-wrap: wrap;
++  margin-top: 12px;
++}
++.fix-item-value {
++  flex: 1; min-width: 150px;
++  border-radius: 10px; padding: 10px 14px;
++  display: grid; gap: 2px; align-content: center;
++}
++.fix-item-value span { font-size: 11.5px; font-weight: 800; text-transform: uppercase; letter-spacing: .07em; }
++.fix-item-value strong { font-size: 14.5px; font-weight: 700; line-height: 1.4; overflow-wrap: anywhere; }
++.fix-item-value.is-declared { background: rgba(0,0,0,.04); }
++.fix-item-value.is-declared span { color: var(--text-tertiary); }
++.fix-item-value.is-declared strong { color: var(--text-secondary); text-decoration: line-through; text-decoration-color: rgba(239,68,68,.5); text-decoration-thickness: 2px; }
++.fix-item-value.is-evidence { background: var(--accent-lighter); border: 1px solid rgba(255,63,108,.22); }
++.fix-item-value.is-evidence span { color: var(--accent); }
++.fix-item-value.is-evidence strong { color: var(--text-primary, #1c2033); }
++.fix-item-arrow { align-self: center; color: var(--accent); flex-shrink: 0; }
++
++.fix-item-why, .fix-item-how { margin: 10px 0 0; font-size: 13.5px; line-height: 1.6; color: var(--text-secondary); }
++.fix-item-why b, .fix-item-how b { color: var(--text-primary, #1c2033); font-weight: 750; }
++.fix-item-actions { display: flex; gap: 9px; margin-top: 13px; flex-wrap: wrap; }
++
++/* ── Live findings table ── */
++.verify-findings-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; margin-bottom: 14px; flex-wrap: wrap; }
++.verify-findings-sub { font-size: 13.5px; color: var(--text-secondary); margin: 0; }
++.verify-findings .tbl td, .verify-findings .tbl th { font-size: 13.5px; padding: 11px 14px; }
++.verify-findings .tbl tbody tr { transition: background .18s ease; }
++
++/* ── Measurement-detail drawer ── */
++.verify-tech { padding: 0; overflow: hidden; }
++.verify-tech summary {
++  list-style: none; cursor: pointer;
++  display: flex; align-items: center; gap: 12px;
++  padding: 16px 20px;
++  color: var(--text-secondary);
++  transition: background .2s ease;
++}
++.verify-tech summary::-webkit-details-marker { display: none; }
++.verify-tech summary:hover { background: var(--accent-lighter); }
++.verify-tech summary:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
++.verify-tech summary strong { display: block; font-size: 14.5px; color: var(--text-primary, #1c2033); }
++.verify-tech summary small { display: block; font-size: 12.5px; margin-top: 1px; }
++.verify-tech-body { padding: 4px 20px 18px; display: grid; gap: 14px; }
++.verify-tech-row { display: grid; grid-template-columns: 130px 1fr; gap: 12px; align-items: start; }
++.verify-tech-label { font-size: 11.5px; font-weight: 800; text-transform: uppercase; letter-spacing: .08em; color: var(--text-tertiary); padding-top: 4px; }
++.verify-tech-row p { margin: 0; font-size: 13.5px; line-height: 1.55; color: var(--text-secondary); }
++.verify-tech-row p.is-bad { color: var(--danger); }
++.verify-tech-chips { display: flex; flex-wrap: wrap; gap: 7px; }
++.verify-tech-chip {
++  font-size: 12.5px; font-weight: 700; padding: 5px 11px; border-radius: 999px;
++  background: rgba(0,0,0,.045); color: var(--text-secondary);
++}
++.verify-tech-chip.is-measured { background: var(--success-bg); color: #0b7c5c; }
++.verify-tech-chip.is-unavailable { background: rgba(0,0,0,.045); color: var(--text-tertiary); }
++.verify-tech-chip.is-not_applicable { background: var(--warning-bg); color: #9a6700; }
++@media (max-width: 640px) { .verify-tech-row { grid-template-columns: 1fr; gap: 4px; } }
++
++/* Workflow chooser descriptions — the text under the two flow buttons was
++   12px low-contrast grey, effectively invisible. Readable now. */
++.tree-branch-description {
++  font-size: 13.5px;
++  line-height: 1.6;
++  color: var(--text-secondary);
++  max-width: 300px;
++}
++.tree-branch-btn .branch-text { font-size: 15px; }
+diff --git a/frontend/src/pages/Verify.jsx b/frontend/src/pages/Verify.jsx
+index 438c776..627beb6 100644
+--- a/frontend/src/pages/Verify.jsx
++++ b/frontend/src/pages/Verify.jsx
+@@ -346,6 +346,13 @@ export default function Verify() {
+   const [nextAction, setNextAction] = useState(null)
+   const [demoNotice, setDemoNotice] = useState(null)
+   const [showOnlyIssues, setShowOnlyIssues] = useState(true)
++  const [channelReport, setChannelReport] = useState(null)
++  // Drives the score-ring fill transition after first paint.
++  const [ringReady, setRingReady] = useState(false)
++  useEffect(() => {
++    const frame = requestAnimationFrame(() => setRingReady(true))
++    return () => cancelAnimationFrame(frame)
++  }, [])
+   
+   // Simulated checklist progress
+   const [checklistStep, setChecklistStep] = useState(0)
+@@ -415,6 +422,7 @@ export default function Verify() {
+       if (result.enhancedMetadata) setEnhancedMetadata(result.enhancedMetadata)
+       if (result.corrections) setCorrections(result.corrections)
+       if (result.suggestionAgent) setSuggestionAgent(result.suggestionAgent)
++      if (result.channelReport) setChannelReport(result.channelReport)
+       if (result.catalogEvidenceDiagnostics) setCatalogEvidenceDiagnostics(result.catalogEvidenceDiagnostics)
+       if (result.sizeChartEvidence) setSizeChartEvidence(result.sizeChartEvidence)
+       if (result.mode) setActualMode(result.mode)
+@@ -991,36 +999,71 @@ export default function Verify() {
+         </section>
+       )}
+ 
+-      {/* Verdict banner */}
+-      <div className={`verdict-bar ${v.status.toLowerCase()}`}>
+-        {v.status === 'PASS' && <CheckCircle size={20} color="var(--success)" />}
+-        {v.status === 'FAIL' && <XCircle size={20} color="var(--danger)" />}
+-        {v.status === 'WARNING' && <AlertTriangle size={20} color="var(--warning)" />}
+-        {v.status === 'UNVERIFIED' && <AlertTriangle size={20} color="var(--text-tertiary)" />}
+-        <div style={{ flex: 1 }}>
+-          <div className="verdict-title">{v.reason}</div>
+-          <div className="verdict-sub">
+-            {v.status === 'FAIL' ? 'Fix the issues below before publishing' :
+-             v.status === 'WARNING' ? 'Review warnings below. You can still publish.' :
+-             v.status === 'UNVERIFIED' ? 'Verification could not complete. Please retry or check your setup.' :
+-             actualMode === 'generate' ? 'Your listing metadata is ready to publish.' :
+-             'Your listing is ready to publish.'}
+-          </div>
+-        </div>
+-        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 8 }}>
+-          {v.overall_similarity !== undefined && (
+-            <div style={{ background: 'rgba(0,0,0,0.05)', padding: '4px 10px', borderRadius: 16, fontSize: 13, fontWeight: 700, color: '#333' }}>
+-              Evidence confidence: <span style={{ color: v.overall_similarity > 80 ? 'var(--success)' : (v.overall_similarity > 50 ? 'var(--warning)' : 'var(--danger)') }}>{Number(v.overall_similarity).toFixed(1)}%</span>
++      {/* Verdict hero — one place that answers "can I publish, and why not" */}
++      {(() => {
++        const status = v.status
++        const scoreValue = v.overall_similarity != null && !Number.isNaN(Number(v.overall_similarity))
++          ? Math.max(0, Math.min(100, Number(v.overall_similarity)))
++          : null
++        // The score's provenance matters: fixture results replay a stored
++        // evidence record (estimate), live runs measure the images in front
++        // of them. Say which one this is instead of showing a bare number.
++        const scoreLabel = hasEvidenceProfile
++          ? 'Estimated from the stored evidence record'
++          : v.fusionResult
++            ? 'Measured live from your images'
++            : null
++        const RING_R = 44
++        const circumference = 2 * Math.PI * RING_R
++        const ringOffset = scoreValue == null ? circumference : circumference * (1 - (ringReady ? scoreValue : 0) / 100)
++        const scoreTone = scoreValue == null ? '' : scoreValue > 80 ? 'good' : scoreValue > 50 ? 'mid' : 'low'
++        const headline = status === 'FAIL'
++          ? `${failCount || 'Critical'} issue${failCount === 1 ? '' : 's'} must be fixed before this listing goes live`
++          : status === 'WARNING'
++            ? `Publishable — ${warnCount} thing${warnCount === 1 ? '' : 's'} worth reviewing first`
++            : status === 'UNVERIFIED'
++              ? 'Verification could not complete'
++              : 'Everything checks out'
++        return (
++          <section className={`verify-hero is-${status.toLowerCase()}`}>
++            <div className="verify-hero-main">
++              <div className="verify-hero-status">
++                {status === 'PASS' && <CheckCircle size={26} />}
++                {status === 'FAIL' && <XCircle size={26} />}
++                {status === 'WARNING' && <AlertTriangle size={26} />}
++                {status === 'UNVERIFIED' && <AlertTriangle size={26} />}
++                <span>{status === 'PASS' ? 'Verified' : status === 'FAIL' ? 'Blocked' : status === 'WARNING' ? 'Needs review' : 'Unverified'}</span>
++              </div>
++              <h2 className="verify-hero-headline">{headline}</h2>
++              <p className="verify-hero-reason">{v.reason}</p>
++              <div className="verify-hero-chips">
++                {failCount > 0 && <span className="verify-chip is-fail"><XCircle size={14} /> {failCount} failed</span>}
++                {warnCount > 0 && <span className="verify-chip is-warn"><AlertTriangle size={14} /> {warnCount} to review</span>}
++                <span className="verify-chip is-pass"><CheckCircle size={14} /> {passCount} passed</span>
++                {skipCount > 0 && <span className="verify-chip is-skip">{skipCount} not measurable</span>}
++              </div>
+             </div>
+-          )}
+-          <div style={{ display: 'flex', gap: 12, fontSize: 12, fontWeight: 600 }}>
+-            <span style={{ color: 'var(--danger)' }}>{failCount} failed</span>
+-            <span style={{ color: 'var(--warning)' }}>{warnCount} warnings</span>
+-            <span style={{ color: 'var(--success)' }}>{passCount} passed</span>
+-            {skipCount > 0 && <span style={{ color: '#e65100' }}>{skipCount} not detected</span>}
+-          </div>
+-        </div>
+-      </div>
++            {scoreValue != null && (
++              <div className="verify-hero-score">
++                <svg viewBox="0 0 104 104" role="img" aria-label={`Consistency score ${scoreValue.toFixed(0)} percent`}>
++                  <circle className="verify-ring-track" cx="52" cy="52" r={RING_R} />
++                  <circle
++                    className={`verify-ring-fill is-${scoreTone}`}
++                    cx="52" cy="52" r={RING_R}
++                    strokeDasharray={circumference}
++                    strokeDashoffset={ringOffset}
++                  />
++                </svg>
++                <div className="verify-hero-score-number">
++                  <strong>{scoreValue.toFixed(0)}<em>%</em></strong>
++                  <span>consistent</span>
++                </div>
++                {scoreLabel && <p className="verify-hero-score-label">{scoreLabel}</p>}
++              </div>
++            )}
++          </section>
++        )
++      })()}
+ 
+       {/* The evidence workspace intentionally keeps each source separate: seller claim,
+           catalog input, and the hash-bound physical anchors. */}
+@@ -1034,7 +1077,11 @@ export default function Verify() {
+             </div>
+             <div className={`anchor-evidence-overall anchor-evidence-overall--${String(evidenceSummary.overallVerdict || 'WARNING').toLowerCase()}`}>
+               <strong>{evidenceSummary.overallVerdict}</strong>
+-              <span>{evidenceSummary.overallReason}</span>
++              {/* The full reason already leads the page in the verdict hero —
++                  repeating the same sentence here was pure noise. */}
++              <span>{evidenceSummary.overallVerdict === 'PASS'
++                ? 'Every supported claim is consistent with the anchors.'
++                : 'Details and fixes are in the list below.'}</span>
+             </div>
+           </div>
+           <div className="anchor-evidence-stats">
+@@ -1099,43 +1146,77 @@ export default function Verify() {
+       )}
+ 
+ 
+-      {/* 🚀 AI CORRECTION CO-PILOT */}
++      {/* THE fix list — the one place issues live. The consistency copilot's
++          summary folds into this header; it no longer gets a second card that
++          restates the same problems in different words. */}
+       {correctionsToShow.length > 0 && actualMode !== 'generate' && (
+-        <div id="ai-correction-copilot" className="card anchor-copilot" style={{ borderLeft: '4px solid var(--accent)', marginTop: 20, animation: 'fadeIn 0.5s ease' }}>
+-          <div className="anchor-copilot-head">
+-            <Sparkles size={20} color="var(--accent)" />
+-            <div><div className="anchor-copilot-title">AI Correction Co-Pilot</div><p>{correctionsToShow.length} issue{correctionsToShow.length === 1 ? '' : 's'} blocking publication</p></div>
++        <div id="ai-correction-copilot" className="card fix-list">
++          <div className="fix-list-head">
++            <div className="fix-list-title">
++              <Sparkles size={20} />
++              <div>
++                <strong>What to fix, and how</strong>
++                <p>{correctionsToShow.length} issue{correctionsToShow.length === 1 ? '' : 's'} standing between this listing and publication</p>
++              </div>
++            </div>
++            {suggestionAgent && (
++              <span className={`badge ${suggestionAgent.status === 'consistent' ? 'badge-pass' : 'badge-warn'}`}>
++                {suggestionAgent.status === 'consistent' ? 'Consumer-ready' : 'Review recommended'}
++              </span>
++            )}
+           </div>
+-          <div className="anchor-copilot-list">
++          <div className="fix-list-items">
+             {correctionsToShow.map((c, i) => {
+               const copy = compactCorrectionCopy(c)
+               const status = acceptedCorrections[c.field] === 'IGNORED' ? 'ignored' : (acceptedCorrections[c.field] ? 'accepted' : 'pending');
+               const isAccepted = status === 'accepted';
+               const isIgnored = status === 'ignored';
+-              
++              const declared = c.current_value && String(c.current_value).trim()
++              const evidenceShows = c.suggested_value && String(c.suggested_value).trim()
++              // Some corrections carry an instruction ("Update the size chart…")
++              // rather than an observed value. Instructions live in "How to fix";
++              // showing them under "Evidence shows" would misstate what was seen.
++              const looksLikeInstruction = evidenceShows
++                && (/^(update|verify|replace|add|review|attach|remove|use|regenerate|upload|mark)\b/i.test(evidenceShows) || evidenceShows.startsWith('('))
++              const showPair = declared && evidenceShows && !looksLikeInstruction
++                && declared.toLowerCase() !== evidenceShows.toLowerCase()
++
+               return (
+-                <article key={i} className={`anchor-copilot-item is-${status}`}>
+-                  <div className="anchor-copilot-item-title">
+-                    {c.displayField || c.label || c.field.replace(/_/g, ' ')}
+-                    {isAccepted && <span><CheckCircle size={12} /> Applied</span>}
+-                    {isIgnored && <span><XCircle size={12} /> Ignored</span>}
+-                  </div>
+-                  <div className="anchor-copilot-copy">
+-                    <p><b>Issue:</b> {copy.issue}</p>
+-                    <p><b>Fix:</b> {copy.action}</p>
++                <article key={i} className={`fix-item is-${status}${c.severity === 'HIGH' || c.severity === 'CRITICAL' ? ' is-critical' : ''}`}>
++                  <div className="fix-item-head">
++                    <span className="fix-item-field">{c.displayField || c.label || c.field.replace(/_/g, ' ')}</span>
++                    {isAccepted && <span className="fix-item-state is-accepted"><CheckCircle size={13} /> Applied</span>}
++                    {isIgnored && <span className="fix-item-state is-ignored"><XCircle size={13} /> Kept your value</span>}
++                    {!isAccepted && !isIgnored && (c.severity === 'HIGH' || c.severity === 'CRITICAL')
++                      ? <span className="fix-item-state is-blocker">Blocks publishing</span> : null}
+                   </div>
++                  {showPair && (
++                    <div className="fix-item-pair">
++                      <div className="fix-item-value is-declared">
++                        <span>Your listing says</span>
++                        <strong>{declared}</strong>
++                      </div>
++                      <ArrowRight size={16} className="fix-item-arrow" />
++                      <div className="fix-item-value is-evidence">
++                        <span>Evidence shows</span>
++                        <strong>{evidenceShows}</strong>
++                      </div>
++                    </div>
++                  )}
++                  <p className="fix-item-why"><b>Why it matters:</b> {copy.issue}</p>
++                  <p className="fix-item-how"><b>How to fix it:</b> {copy.action}</p>
+                   {status === 'pending' && c.action === 'attach_evidence' && (
+-                    <span className="anchor-copilot-proof">Proof required</span>
++                    <span className="anchor-copilot-proof">Proof required — attach a document or remove the claim</span>
+                   )}
+                   {status === 'pending' && c.action !== 'attach_evidence' && (
+-                    <div className="anchor-copilot-actions">
+-                      <button className="btn btn-primary" onClick={() => applyCorrection(c)}>
+-                        {c.claimKey === 'size_chart_physical_length' ? 'Mark for chart update' : c.action === 'review_catalog' ? 'Mark for catalog review' : 'Apply to seller claim'}
++                    <div className="fix-item-actions">
++                      <button className="btn btn-primary btn-sm" onClick={() => applyCorrection(c)}>
++                        {c.claimKey === 'size_chart_physical_length' ? 'Mark for chart update' : c.action === 'review_catalog' ? 'Mark for catalog review' : 'Apply the fix'}
+                       </button>
+-                      <button className="btn btn-outline" onClick={() => {
++                      <button className="btn btn-outline btn-sm" onClick={() => {
+                         setIgnoreConfirm(c)
+                       }}>
+-                        Ignore
++                        Keep my value
+                       </button>
+                     </div>
+                   )}
+@@ -1143,46 +1224,6 @@ export default function Verify() {
+               )
+             })}
+           </div>
+-          <div className="anchor-copilot-footer">
+-            Resolve all {correctionsToShow.length} issue{correctionsToShow.length === 1 ? '' : 's'} to publish.
+-          </div>
+-        </div>
+-      )}
+-
+-      {/* ✨ AI LISTING ENHANCER (CSV Mode only) ✨ */}
+-      {suggestionAgent && actualMode !== 'generate' && !hasEvidenceProfile && (
+-        <div className="card" style={{ marginTop: 20, border: '1px solid #ff3f6c40', background: 'linear-gradient(135deg, #fff8fa, #ffffff)' }}>
+-          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'flex-start', marginBottom: 14 }}>
+-            <div>
+-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#ff3f6c', fontWeight: 800 }}>
+-                <ShieldCheck size={20} /> {suggestionAgent.name || 'Anchor Consistency Copilot'}
+-              </div>
+-              <p style={{ margin: '6px 0 0', color: 'var(--text-secondary)', fontSize: 13, lineHeight: 1.6 }}>
+-                {suggestionAgent.summary}
+-              </p>
+-            </div>
+-            <span className={`badge ${suggestionAgent.status === 'consistent' ? 'badge-pass' : 'badge-warn'}`}>
+-              {suggestionAgent.status === 'consistent' ? 'Consumer-ready' : 'Review recommended'}
+-            </span>
+-          </div>
+-          {suggestionAgent.actions?.length > 0 && (
+-            <div style={{ display: 'grid', gap: 9 }}>
+-              {suggestionAgent.actions.slice(0, 6).map((action, index) => (
+-                <div key={`${action.field}-${index}`} style={{ padding: 12, borderRadius: 10, background: '#fff', border: '1px solid var(--border)' }}>
+-                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12 }}>
+-                    <strong style={{ fontSize: 13 }}>{action.field}</strong>
+-                    <span style={{ color: action.priority === 'HIGH' ? 'var(--danger)' : 'var(--warning)', fontSize: 11, fontWeight: 800 }}>
+-                      {action.priority}
+-                    </span>
+-                  </div>
+-                  <div style={{ marginTop: 5, color: 'var(--text-secondary)', fontSize: 12 }}>{action.reason}</div>
+-                  <div style={{ marginTop: 5, color: '#0f7b58', fontSize: 12 }}>
+-                    Shopper impact: {action.consumer_impact}
+-                  </div>
+-                </div>
+-              ))}
+-            </div>
+-          )}
+         </div>
+       )}
+ 
+@@ -1516,11 +1557,11 @@ export default function Verify() {
+         <section className="bayesian-confidence-card">
+           <div className="bayesian-confidence-heading">
+             <div>
+-              <span className="section-kicker">Anchor confidence</span>
+-              <h2>{Number(v.fusionResult.probability).toFixed(1)}% evidence-consistent</h2>
+-              <p>Anchor starts with a base likelihood, then updates it with independent visual and structured checks. Publication still follows the shopper-critical issue gate.</p>
++              <span className="section-kicker">How the score was computed</span>
++              <h2>{Number(v.fusionResult.probability).toFixed(1)}% — measured, not guessed</h2>
++              <p>Each independent check nudges the score up or down from an even starting point. Every nudge below is inspectable.</p>
+             </div>
+-            <span className={`badge ${Number(v.fusionResult.probability) >= 75 ? 'badge-pass' : 'badge-warn'}`}>Bayesian update</span>
++            <span className={`badge ${Number(v.fusionResult.probability) >= 75 ? 'badge-pass' : 'badge-warn'}`}>Live measurement</span>
+           </div>
+           <div className="bayesian-confidence-breakdown">
+             <div><span>Base likelihood</span><strong>{(Number(v.fusionResult.breakdown?.prior || 0) * 100).toFixed(0)}%</strong></div>
+@@ -1714,14 +1755,26 @@ export default function Verify() {
+         </div>
+       )}
+ 
+-      {/* Superseded by the three-source evidence record below. */}
+-      {false && <div id="verification-findings" className="card">
+-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+-          <div className="card-title" style={{ fontSize: 14, marginBottom: 0 }}>
+-            Attribute comparison ({rows.length} attributes checked)
++      {/* Live comparison table — general uploads get the same three-source
++          reading and the same focus toggle the fixture matrix has. */}
++      {!hasEvidenceProfile && actualMode !== 'generate' && rows.length > 0 && (() => {
++        const isIssueRow = r => r.status === 'mismatch' || r.status === 'warning' || r.status === 'skip'
++        const issueRows = rows.filter(isIssueRow)
++        const visibleRows = showOnlyIssues ? issueRows : rows
++        return <div id="verification-findings" className="card verify-findings">
++        <div className="verify-findings-head">
++          <div>
++            <div className="card-title" style={{ marginBottom: 2 }}>What Anchor compared</div>
++            <p className="verify-findings-sub">{rows.length} attributes read from your anchors, catalog images and declared values. Click a row for the reasoning.</p>
+           </div>
+-          <div style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>Click a row to see details</div>
++          <button type="button" className={`anchor-focus-toggle ${showOnlyIssues ? 'is-active' : ''}`} aria-pressed={showOnlyIssues} onClick={() => setShowOnlyIssues(value => !value)}>
++            <span className="anchor-focus-toggle-knob" aria-hidden="true" />
++            <span><strong>Focus on issues</strong><small>{showOnlyIssues ? `Showing ${issueRows.length} issue${issueRows.length === 1 ? '' : 's'}` : 'Showing everything'}</small></span>
++          </button>
+         </div>
++        {showOnlyIssues && issueRows.length === 0 ? (
++          <div className="anchor-evidence-all-clear"><CheckCircle size={28} /><div><strong>No issues found</strong><p>Every compared attribute is consistent. Switch off Focus on issues to see the full comparison.</p></div><button type="button" className="btn btn-outline btn-sm" onClick={() => setShowOnlyIssues(false)}>View everything</button></div>
++        ) : (
+         <table className="tbl">
+           <thead>
+             <tr>
+@@ -1733,7 +1786,7 @@ export default function Verify() {
+             </tr>
+           </thead>
+           <tbody>
+-            {rows.map((r, i) => (
++            {visibleRows.map((r, i) => (
+               <React.Fragment key={r.key || i}>
+                 <tr
+                   className={r.status === 'mismatch' ? (r.severity === 'HIGH' ? 'row-fail' : 'row-warn') : r.status === 'warning' ? 'row-warn' : ''}
+@@ -1767,8 +1820,8 @@ export default function Verify() {
+                 </tr>
+                 {expandedRow === i && r.note && (
+                   <tr style={{ background: r.status === 'mismatch' && r.severity === 'HIGH' ? 'var(--danger-bg)' : r.status === 'warning' || r.status === 'mismatch' ? 'var(--warning-bg)' : 'var(--bg-page)' }}>
+-                    <td colSpan={5} style={{ fontSize: 12, color: 'var(--text-secondary)', padding: '8px 14px 12px', borderBottom: '1px solid var(--border)' }}>
+-                      <Eye size={12} style={{ verticalAlign: -2, marginRight: 4 }} />
++                    <td colSpan={5} className="verify-findings-note">
++                      <Eye size={13} style={{ verticalAlign: -2, marginRight: 5 }} />
+                       {r.note}
+                     </td>
+                   </tr>
+@@ -1777,7 +1830,8 @@ export default function Verify() {
+             ))}
+           </tbody>
+         </table>
+-      </div>}
++        )}
++      </div>})()}
+ 
+       {/* Fabric closeup needed banner */}
+       {rows.some(r => r.key === 'fabric_appearance' && (r.status === 'skip' || r.anchor_confidence === 'LOW')) && (
+@@ -1815,66 +1869,53 @@ export default function Verify() {
+         </div>
+       )}
+ 
+-      {/* Fabric verification */}
+-      {fabricResult && (
+-        <div className="card">
+-          <div className="card-title" style={{ fontSize: 14 }}>Visual Similarity (CLIP)</div>
+-
+-          {fabricResult.similarity_score !== undefined && (
+-            <div style={{ fontSize: 12, marginBottom: 8, padding: '4px 8px', background: 'var(--bg-highlight)', borderRadius: 4, display: 'inline-block', border: '1px solid var(--border)' }}>
+-              <strong>CLIP Cosine Similarity:</strong> {(fabricResult.similarity_score * 100).toFixed(1)}%
+-              {fabricResult.source && <span style={{ marginLeft: 6, color: 'var(--text-tertiary)' }}>({fabricResult.source})</span>}
+-            </div>
+-          )}
+-
+-          {fabricResult.fabric_matches_anchor === true || fabricResult.fabric_matches_anchor === undefined ? (
+-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: 'var(--success)' }}>
+-              <CheckCircle size={14} />
+-              {fabricResult.issue ? fabricResult.issue : 'Fabric appearance is consistent between anchor and catalog'}
+-            </div>
+-          ) : (
+-            <div>
+-              <div style={{ color: 'var(--danger)', fontSize: 13, lineHeight: 1.6 }}>
+-                <XCircle size={14} style={{ verticalAlign: -2, marginRight: 4 }} />
+-                {fabricResult.issue || 'Fabric appearance differs between anchor and catalog'}
+-              </div>
+-              {fabricResult.needs_fabric_image && (
+-                <div style={{ marginTop: 8, padding: '8px 12px', background: 'var(--bg-highlight)', borderRadius: 6, border: '1px solid var(--warning)', fontSize: 12, color: 'var(--warning)' }}>
+-                  <AlertTriangle size={14} style={{ verticalAlign: -2, marginRight: 4 }} />
+-                  <strong>Mandatory:</strong> Please upload a clear fabric closeup image to verify fabric consistency.
++      {/* Raw signal detail — one quiet drawer instead of a stack of jargon
++          cards. The verdict and fix list above already say what matters; this
++          exists for the reviewer who wants to see the instruments. */}
++      {(fabricResult || phashResult || (channelReport && channelReport.length > 0)) && actualMode !== 'generate' && (
++        <details className="card verify-tech">
++          <summary>
++            <ShieldCheck size={17} />
++            <span><strong>Measurement detail</strong><small>The raw signals behind the score — for reviewers, not required reading</small></span>
++          </summary>
++          <div className="verify-tech-body">
++            {channelReport && channelReport.length > 0 && (
++              <div className="verify-tech-row">
++                <span className="verify-tech-label">Channels</span>
++                <div className="verify-tech-chips">
++                  {channelReport.map(c => (
++                    <span key={c.channel} className={`verify-tech-chip is-${c.status}`}>
++                      {c.channel.replace(/_/g, ' ')}
++                      {c.status === 'measured' ? ` · LR ${Number(c.lr).toFixed(2)}` : ` · ${c.status.replace(/_/g, ' ')}`}
++                    </span>
++                  ))}
+                 </div>
+-              )}
+-            </div>
+-          )}
+-        </div>
+-      )}
+-
+-      {/* pHash Perceptual Hashing */}
+-      {phashResult && (
+-        <div className="card">
+-          <div className="card-title" style={{ fontSize: 14 }}>Perceptual Hash (pHash)</div>
+-          <div style={{ display: 'flex', gap: 20, alignItems: 'center', marginBottom: 8 }}>
+-            <div style={{ fontSize: 12, padding: '4px 8px', background: 'var(--bg-highlight)', borderRadius: 4, border: '1px solid var(--border)' }}>
+-              <strong>Hamming Distance:</strong> {phashResult.phash_distance}
+-            </div>
+-            {phashResult.similarity_score != null && (
+-              <div style={{ fontSize: 12, padding: '4px 8px', background: 'var(--bg-highlight)', borderRadius: 4, border: '1px solid var(--border)' }}>
+-                <strong>Similarity:</strong> {(phashResult.similarity_score * 100).toFixed(1)}%
++              </div>
++            )}
++            {fabricResult && (
++              <div className="verify-tech-row">
++                <span className="verify-tech-label">Fabric (CLIP)</span>
++                <p className={fabricResult.fabric_matches_anchor === false ? 'is-bad' : 'is-good'}>
++                  {fabricResult.similarity_score !== undefined && <b>{(fabricResult.similarity_score * 100).toFixed(1)}% similarity · </b>}
++                  {fabricResult.fabric_matches_anchor === false
++                    ? (fabricResult.issue || 'Fabric appearance differs between anchor and catalog.')
++                    : 'Fabric appearance is consistent between anchor and catalog.'}
++                </p>
++              </div>
++            )}
++            {phashResult && (
++              <div className="verify-tech-row">
++                <span className="verify-tech-label">Structure (pHash)</span>
++                <p>
++                  <b>Distance {phashResult.phash_distance} · </b>
++                  {phashResult.is_match
++                    ? 'Images are near-identical at the pixel level.'
++                    : 'Images differ at the pixel level — normal for different photo angles.'}
++                </p>
+               </div>
+             )}
+           </div>
+-          {phashResult.is_match ? (
+-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: 'var(--success)' }}>
+-              <CheckCircle size={14} />
+-              Images are perceptually identical or near-identical (distance ≤ 10)
+-            </div>
+-          ) : (
+-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: 'var(--warning)' }}>
+-              <AlertTriangle size={14} />
+-              Images differ significantly at the pixel level (distance {phashResult.phash_distance}). This is normal for different photo angles.
+-            </div>
+-          )}
+-        </div>
++        </details>
+       )}
+ 
+       {/* ─── EVIDENCE MATRIX (moved to bottom for clarity) ─── */}
+@@ -2029,7 +2070,7 @@ export default function Verify() {
+             <strong>{publishGate.blocked ? 'Not ready to publish' : 'Ready to publish'}</strong>
+             <span>
+               {publishGate.blocked
+-                ? publishGate.message
++                ? `Resolve the ${failCount > 0 ? `${failCount} blocking issue${failCount === 1 ? '' : 's'}` : 'blocking issues'} in the fix list to unlock publishing.`
+                 : v.status === 'PASS'
+                   ? 'All critical checks passed.'
+                   : `${warnCount} warning${warnCount === 1 ? '' : 's'} will remain attached to the evidence trail.`}
+-- 
+2.43.0
+

@@ -3,13 +3,12 @@ import { useLocation, useNavigate } from 'react-router-dom'
 import {
   ArrowRight, BarChart3, CheckCircle2, Clock3, Hash, LayoutDashboard, Plus, ShieldCheck, Sparkles,
 } from 'lucide-react'
-import ExcelView from '../components/ExcelView'
 import { useApp } from '../AppContext'
 
 export default function Success() {
   const nav = useNavigate()
   const location = useLocation()
-  const { csvSessionId, verdict } = useApp()
+  const { verdict } = useApp()
   const publishedProductId = location.state?.productId
   const styleId = useMemo(
     () => `MYN-ANC-${Date.now().toString(36).toUpperCase().slice(-5)}`,
@@ -76,17 +75,6 @@ export default function Success() {
             <LayoutDashboard size={15} /> Dashboard
           </button>
         </div>
-      </section>
-
-      <section className="success-sheet">
-        <div className="success-sheet-heading">
-          <div>
-            <div className="section-kicker">Publication record</div>
-            <h2>Updated product sheet</h2>
-          </div>
-          <span>{csvSessionId ? 'Ready to download' : 'Optional'}</span>
-        </div>
-        <ExcelView />
       </section>
     </main>
   )

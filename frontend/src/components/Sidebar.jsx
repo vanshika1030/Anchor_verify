@@ -1,10 +1,9 @@
 import { useLocation, useNavigate } from 'react-router-dom'
-import { LayoutDashboard, Package, PlusCircle, BarChart3, CreditCard, Settings, ShieldCheck, Anchor, Sparkles } from 'lucide-react'
+import { LayoutDashboard, PlusCircle, BarChart3, CreditCard, Settings, ShieldCheck, Anchor, Sparkles } from 'lucide-react'
 import { useApp } from '../AppContext'
 
 const NAV = [
   { icon: LayoutDashboard, label: 'Dashboard', path: '/dashboard' },
-  { icon: Package, label: 'My Listings', path: null },
   { icon: PlusCircle, label: 'Create Listing', path: '/new-listing' },
   { icon: BarChart3, label: 'Analytics', path: null },
   { icon: CreditCard, label: 'Payments', path: null },

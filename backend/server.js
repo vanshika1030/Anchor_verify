@@ -12,7 +12,8 @@ import csvRoutes from './routes/csv.js'
 import authRoutes from './routes/auth.js'
 import productRoutes from './routes/products.js'
 import sizechartRoutes from './routes/sizechart.js'
-import { initDB } from './services/database.js'
+import { initDB, getDB } from './services/database.js'
+import { getMlServiceHealth, ML_SERVICE_URL } from './services/ml_client.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const app = express()
@@ -39,8 +40,7 @@ if (process.env.GEMINI_API_KEYS && process.env.GEMINI_API_KEYS.trim()) {
   console.warn('⚠️  GEMINI_API_KEY not set — Gemini will not be available')
 }
 
-console.log('✅ Local AI models: ViT (6 attributes, 89% acc) + CLIP (zero-shot) + pHash + Segmentation')
-console.log('📦 Architecture: 5-Layer Hierarchical — ZERO API calls for verification')
+console.log('📦 Verification: hash-bound fixture evidence; new inputs require the live visual-analysis worker')
 
 // ─── Middleware ──────────────────────────────────────────────────────
 app.use(cors({ origin: ['http://localhost:5173', 'http://127.0.0.1:5173'], credentials: true }))
@@ -49,6 +49,7 @@ app.use(express.urlencoded({ extended: true, limit: '500mb' }))
 
 // Serve uploaded images statically (for verification comparison UI)
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')))
+app.use('/demo-assets', express.static(path.join(__dirname, '..', 'demo_data', 'catalog')))
 
 // ─── File upload config ──────────────────────────────────────────────
 const storage = multer.diskStorage({
@@ -67,19 +68,64 @@ const upload = multer({
 
 // ─── Routes ──────────────────────────────────────────────────────────
 
-// Health check
-app.get('/api/health', (req, res) => {
-  res.json({
-    status: 'ok',
-    architecture: '5-layer-hierarchical',
-    layers: {
-      'Layer 1': 'CLIP + pHash (local visual gate)',
-      'Layer 2': 'ViT + CLIP zero-shot (local attribute extraction)',
-      'Layer 3': 'Deterministic comparison (synonym matching)',
-      'Layer 4': 'Bayesian mathematical fusion',
-      'Layer 5': 'Text-only LLM (Groq → Gemini → template)',
+// Health check.
+//
+// This used to be a static `status: 'ok'` that reported success no matter what
+// was actually running — including the failure mode that broke verification
+// most often, the Python ML worker not being started. It now probes each
+// dependency and returns 503 when a decision-critical one is down, so a red
+// health check is a real signal rather than decoration.
+app.get('/api/health', async (req, res) => {
+  const ml = await getMlServiceHealth()
+
+  let database = { ok: false, detail: 'not initialized' }
+  try {
+    getDB().prepare('SELECT 1').get()
+    database = { ok: true, detail: 'reachable' }
+  } catch (err) {
+    database = { ok: false, detail: err.message }
+  }
+
+  // Layers 1–4 are local and decision-critical. Layer 5 (text generation) is
+  // enhancement-only, so a missing LLM key degrades but never fails the check.
+  // A worker in math-only mode (no torch stack) still serves colour ΔE and
+  // FFT print geometry — decision-grade evidence — so it counts as degraded,
+  // not down.
+  const mathChannels = ml.capabilities?.color_delta_e === true
+  const criticalOk = database.ok && ml.reachable && (ml.clip_loaded !== false || mathChannels)
+  const degraded = criticalOk && (ml.vit_loaded === false || ml.clip_loaded !== true)
+
+  res.status(criticalOk ? 200 : 503).json({
+    status: criticalOk ? (degraded ? 'degraded' : 'ok') : 'unhealthy',
+    checks: {
+      database,
+      ml_worker: {
+        ok: ml.reachable && (ml.clip_loaded !== false || mathChannels),
+        url: ml.url,
+        reachable: ml.reachable,
+        clip_loaded: ml.clip_loaded,
+        vit_loaded: ml.vit_loaded,
+        dino_loaded: ml.dino_loaded ?? null,
+        capabilities: ml.capabilities || null,
+        device: ml.device || null,
+        detail: ml.detail,
+      },
+      llm_text_generation: {
+        // Enhancement only — Layer 5. Never gates the overall status.
+        ok: true,
+        groq_key_present: Boolean(process.env.GROQ_API_KEY),
+        gemini_key_present: Boolean(
+          (process.env.GEMINI_API_KEYS && process.env.GEMINI_API_KEYS.trim()) ||
+          (process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY.trim())
+        ),
+        detail: 'Optional. Only used for Layer 5 listing text; absence does not affect verification.',
+      },
     },
-    api_calls_for_verify: 0,
+    verification: {
+      exact_fixture: 'Hash-bound evidence observations are rechecked against the current seller claims.',
+      new_inputs: 'A live visual-analysis worker is required; unavailable inputs remain UNVERIFIED.',
+    },
+    generation: 'Only the exact pre-rendered finalist fixture is available without a render worker.',
   })
 })
 
@@ -108,9 +154,29 @@ app.use((err, req, res, next) => {
 })
 
 // ─── Start ───────────────────────────────────────────────────────────
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
   console.log(`Anchor backend running on http://localhost:${PORT}`)
+
+  // Boot-time self-check. The ML worker is a separate process that has to be
+  // started by hand; forgetting it used to surface only as empty verification
+  // results much later, because the Node log looked perfectly healthy.
+  const ml = await getMlServiceHealth()
+  if (!ml.reachable) {
+    console.warn(`⛔ ML worker unreachable at ${ML_SERVICE_URL} (${ml.detail})`)
+    console.warn('   Verification of new anchors will return EVIDENCE_PENDING until it is running.')
+    console.warn('   Start it with:  python services/ai_server.py')
+  } else if (ml.clip_loaded === false) {
+    console.warn(`⚠️  ML worker is up at ${ML_SERVICE_URL} but CLIP is NOT loaded (${ml.detail})`)
+  } else if (ml.vit_loaded === false) {
+    console.warn(`⚠️  ML worker is up at ${ML_SERVICE_URL}, CLIP loaded, but the ViT is NOT loaded — attribute extraction will be CLIP-only`)
+  } else if (ml.clip_loaded === null) {
+    console.warn(`⚠️  ML worker at ${ML_SERVICE_URL} has no /health route — model load state unknown`)
+  } else {
+    console.log(`✅ ML worker healthy at ${ML_SERVICE_URL} (CLIP + ViT loaded, device: ${ml.device || 'cpu'})`)
+  }
+
   console.log(`API endpoints:`)
+  console.log(`  GET  /api/health            — dependency health (503 when a critical one is down)`)
   console.log(`  POST /api/extract/anchor   — extract attributes from anchor images`)
   console.log(`  POST /api/verify            — single-prompt verification pipeline`)
   console.log(`  GET  /api/csv/template      — download Myntra CSV template`)

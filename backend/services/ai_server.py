@@ -1,21 +1,55 @@
 import os
 import uuid
 import json
-import torch
-import torch.nn as nn
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
 from PIL import Image
-import open_clip
-import imagehash
-from rembg import remove
 import numpy as np
-import timm
-from torchvision import transforms
-from safetensors.torch import load_file
 from contextlib import asynccontextmanager
+
+# ── Capability-guarded imports ───────────────────────────────────────
+# The worker must boot with whatever is installed and say precisely what it
+# can do. A missing torch stack disables the deep channels; the math channels
+# (colour delta-E, FFT print geometry) need only numpy + Pillow and are the
+# reason this file no longer hard-crashes on a lean machine.
+try:
+    import torch
+    import torch.nn as nn
+    TORCH_OK = True
+except ImportError:
+    torch = None
+    nn = None
+    TORCH_OK = False
+
+try:
+    import open_clip
+    OPEN_CLIP_OK = TORCH_OK
+except ImportError:
+    OPEN_CLIP_OK = False
+
+try:
+    import imagehash
+    IMAGEHASH_OK = True
+except ImportError:
+    IMAGEHASH_OK = False
+
+try:
+    from rembg import remove
+    REMBG_OK = True
+except ImportError:
+    REMBG_OK = False
+
+try:
+    import timm
+    from torchvision import transforms
+    from safetensors.torch import load_file
+    TIMM_OK = TORCH_OK
+except ImportError:
+    TIMM_OK = False
+
+from verification_math import compare_color_sets, compare_colors, compare_texture
 
 # Global models
 clip_model = None
@@ -27,6 +61,9 @@ vit_model = None
 vit_transform = None
 vit_meta = None
 vit_device = None
+
+dino_model = None
+dino_transform = None
 
 # ZERO_SHOT_ATTRIBUTES (from clip_similarity_cli.py)
 ZERO_SHOT_ATTRIBUTES = {
@@ -95,31 +132,52 @@ PROMPT_TEMPLATES = {
 async def lifespan(app: FastAPI):
     global clip_model, clip_preprocess, clip_tokenizer, use_hf_clip
     global vit_model, vit_transform, vit_meta, vit_device
-    
+    global dino_model, dino_transform
+
     # Load CLIP Model — try FashionCLIP via transformers, fallback to best open_clip
-    try:
-        print("[AI-SERVER] Attempting to load Marqo/marqo-fashionCLIP via open_clip...")
-        clip_model, _, clip_preprocess = open_clip.create_model_and_transforms('hf-hub:Marqo/marqo-fashionCLIP')
-        clip_tokenizer = open_clip.get_tokenizer('hf-hub:Marqo/marqo-fashionCLIP')
-        clip_model.eval()
-        use_hf_clip = False
-        print("[AI-SERVER] OK: FashionCLIP loaded via open_clip")
-    except Exception as e:
-        print(f"[AI-SERVER] FashionCLIP not available ({e}), using best open_clip model...")
-        clip_model, _, clip_preprocess = open_clip.create_model_and_transforms(
-            'ViT-B-32', pretrained='datacomp_xl_s13b_b90k'
-        )
-        clip_tokenizer = open_clip.get_tokenizer('ViT-B-32')
-        clip_model.eval()
-        use_hf_clip = False
-        print("[AI-SERVER] OK: CLIP ViT-B-32 (datacomp_xl) loaded")
-    
+    if OPEN_CLIP_OK:
+        try:
+            print("[AI-SERVER] Attempting to load Marqo/marqo-fashionCLIP via open_clip...")
+            clip_model, _, clip_preprocess = open_clip.create_model_and_transforms('hf-hub:Marqo/marqo-fashionCLIP')
+            clip_tokenizer = open_clip.get_tokenizer('hf-hub:Marqo/marqo-fashionCLIP')
+            clip_model.eval()
+            use_hf_clip = False
+            print("[AI-SERVER] OK: FashionCLIP loaded via open_clip")
+        except Exception as e:
+            print(f"[AI-SERVER] FashionCLIP not available ({e}), using best open_clip model...")
+            try:
+                clip_model, _, clip_preprocess = open_clip.create_model_and_transforms(
+                    'ViT-B-32', pretrained='datacomp_xl_s13b_b90k'
+                )
+                clip_tokenizer = open_clip.get_tokenizer('ViT-B-32')
+                clip_model.eval()
+                use_hf_clip = False
+                print("[AI-SERVER] OK: CLIP ViT-B-32 (datacomp_xl) loaded")
+            except Exception as e2:
+                print(f"[AI-SERVER] No CLIP model could be loaded ({e2}). CLIP endpoints disabled.")
+    else:
+        print("[AI-SERVER] torch/open_clip not installed — CLIP endpoints disabled, math channels still live.")
+
+    # DINOv2 — instance-level identity embeddings (C1). Small model, big deal:
+    # trained without text to recognise THE SAME OBJECT across views, which is
+    # the question catalog fraud actually poses. ~90 MB from the HF hub.
+    if TIMM_OK:
+        try:
+            print("[AI-SERVER] Loading DINOv2-S/14 via timm...")
+            dino_model = timm.create_model('vit_small_patch14_dinov2.lvd142m', pretrained=True, num_classes=0)
+            dino_model.eval()
+            cfg = timm.data.resolve_model_data_config(dino_model)
+            dino_transform = timm.data.create_transform(**cfg, is_training=False)
+            print("[AI-SERVER] OK: DINOv2-S/14 loaded")
+        except Exception as e:
+            print(f"[AI-SERVER] DINOv2 unavailable ({e}) — identity channel will use CLIP only.")
+
     # Load ViT Model
     script_dir = os.path.dirname(os.path.abspath(__file__))
     metadata_path = os.path.join(script_dir, 'model_metadata.json')
     weights_path = os.path.join(script_dir, 'model_best.safetensors')
-    
-    if os.path.exists(metadata_path) and os.path.exists(weights_path):
+
+    if TIMM_OK and os.path.exists(metadata_path) and os.path.exists(weights_path):
         with open(metadata_path, 'r') as f:
             vit_meta = json.load(f)
             
@@ -174,6 +232,48 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.get("/health")
+def health():
+    """Report what is actually loaded, not just that the process is listening.
+
+    FastAPI serves /openapi.json regardless of model state, so the Node backend
+    used to treat a model-less worker as healthy and every verification layer
+    silently returned nothing. This route makes the real state checkable.
+    """
+    clip_ok = clip_model is not None and clip_preprocess is not None and clip_tokenizer is not None
+    vit_ok = vit_model is not None and vit_transform is not None and vit_meta is not None
+    dino_ok = dino_model is not None
+    # Math channels have no model dependency at all — if this process is
+    # answering, colour delta-E and print geometry are live.
+    if clip_ok and vit_ok:
+        status = "ok"
+    elif clip_ok or vit_ok or dino_ok:
+        status = "degraded"
+    else:
+        status = "math_only"
+
+    return {
+        "status": status,
+        "clip_loaded": clip_ok,
+        "vit_loaded": vit_ok,
+        "dino_loaded": dino_ok,
+        "capabilities": {
+            "color_delta_e": True,
+            "print_geometry": True,
+            "identity_embeddings": dino_ok or clip_ok,
+            "clip_similarity": clip_ok,
+            "clip_zero_shot": clip_ok,
+            "vit_attributes": vit_ok,
+            "segmentation": REMBG_OK,
+            "phash": IMAGEHASH_OK,
+        },
+        "clip_model": ("transformers-CLIP" if use_hf_clip else "open_clip") if clip_ok else None,
+        "vit_labels": sorted(vit_meta["label_maps"].keys()) if vit_ok else None,
+        "device": str(vit_device) if vit_device is not None else None,
+    }
+
 
 # ── CLIP abstraction helpers ──
 def encode_image_clip(pil_image):
@@ -378,6 +478,77 @@ def segment(req: ImageReq):
         }
     except Exception as e:
         return {"error": str(e)}
+
+# ── Verification-network channels ────────────────────────────────────
+
+class ColorSetReq(BaseModel):
+    anchor_paths: List[str]
+    catalog_paths: List[str]
+    garment_hint: Optional[str] = None
+
+class PairPathReq(BaseModel):
+    anchor_path: str
+    catalog_path: str
+
+@app.post("/channel/color")
+def channel_color(req: ColorSetReq):
+    """C2 — colour fidelity. Per-view LAB palettes + CIEDE2000 (kL=2 textile
+    mode), median across views. Pure math; needs no model weights."""
+    try:
+        return compare_color_sets(req.anchor_paths, req.catalog_paths, req.garment_hint)
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@app.post("/channel/texture")
+def channel_texture(req: PairPathReq):
+    """C3 — print geometry. FFT dominant period in cycles per garment width
+    (camera-distance invariant) + texture energy. Pure math."""
+    try:
+        return compare_texture(req.anchor_path, req.catalog_path)
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+def _embed_image(path, model, transform):
+    img = Image.open(path).convert("RGB")
+    x = transform(img).unsqueeze(0)
+    with torch.no_grad():
+        feats = model(x)
+    feats = feats / feats.norm(dim=-1, keepdim=True)
+    return feats
+
+@app.post("/channel/identity")
+def channel_identity(req: PairPathReq):
+    """C1 — instance identity. DINOv2 (same-object) and CLIP (same-category)
+    cosines, reported separately AND as one agreement-weighted family score —
+    the fusion layer must treat these as ONE channel, never two."""
+    try:
+        readings = {}
+        if dino_model is not None:
+            a = _embed_image(req.anchor_path, dino_model, dino_transform)
+            c = _embed_image(req.catalog_path, dino_model, dino_transform)
+            readings["dino_similarity"] = round(float((a @ c.T).item()), 4)
+        if clip_model is not None:
+            a = encode_image_clip(Image.open(req.anchor_path).convert("RGB"))
+            c = encode_image_clip(Image.open(req.catalog_path).convert("RGB"))
+            readings["clip_similarity"] = round(float((a @ c.T).item()), 4)
+        if not readings:
+            return {"success": False, "error": "no embedding model loaded"}
+
+        values = list(readings.values())
+        family = sum(values) / len(values)
+        # Two models agreeing is worth more than either alone; disagreement is
+        # a reason for caution, not an average. The spread is reported so the
+        # fusion layer can dampen the family score when the cousins argue.
+        spread = max(values) - min(values) if len(values) > 1 else 0.0
+        return {
+            "success": True,
+            **readings,
+            "family_similarity": round(family, 4),
+            "family_spread": round(spread, 4),
+            "models_used": len(values),
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
 
 @app.post("/phash")
 def phash(req: PhashReq):

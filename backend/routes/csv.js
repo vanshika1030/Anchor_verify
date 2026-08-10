@@ -27,6 +27,16 @@ const CATALOG_IMAGE_KEYS = [
   'catalogImage_closeup',
   'catalogImage_full',
 ]
+// Offline-safe previews for the deliberate finalist CSV fixture. The source
+// URL remains in the seller record and is what the evidence layer signs; this
+// mapping only avoids a last-minute CDN dependency for the on-screen preview.
+const FINALIST_KURTI_CATALOG_VIEWS = new Map([
+  ['https://cdn.phototourl.com/free/2026-07-23-0fa8cbcc-741a-4761-9f78-6c4104942a51.jpg', 'front'],
+  ['https://cdn.phototourl.com/free/2026-07-23-b4d648f2-8a0f-40b3-a91d-432c69b47039.jpg', 'back'],
+  ['https://cdn.phototourl.com/free/2026-07-23-70824477-6498-425c-8b27-9d7ffdeca43b.jpg', 'side'],
+  ['https://cdn.phototourl.com/free/2026-07-23-ecd97657-412e-491e-a6e6-9a119497986e.jpg', 'closeup'],
+  ['https://cdn.phototourl.com/free/2026-07-23-d8eb16ae-cb53-40e9-81a1-3510bac23023.jpg', 'full'],
+])
 
 const imageExtension = contentType => {
   if (contentType.includes('png')) return '.png'
@@ -36,6 +46,23 @@ const imageExtension = contentType => {
 
 async function materializeCatalogImage(url, sessionId, rowIndex, key) {
   const view = key.replace('catalogImage_', '')
+  const finalistView = FINALIST_KURTI_CATALOG_VIEWS.get(url)
+  const finalistSnapshot = finalistView
+    ? path.join(uploadsDir, 'pregenerated', 'csv_kurti_catalog_' + finalistView + '.jpg')
+    : null
+
+  if (finalistSnapshot && fs.existsSync(finalistSnapshot)) {
+    return {
+      key,
+      view,
+      sourceUrl: url,
+      resolvedUrl: 'http://localhost:3001/uploads/pregenerated/csv_kurti_catalog_' + finalistView + '.jpg',
+      status: 'precomputed_fixture',
+      bytes: fs.statSync(finalistSnapshot).size,
+      note: 'Offline-safe preview for the exact finalist catalog fixture.',
+    }
+  }
+
   const controller = new AbortController()
   const timeoutId = setTimeout(() => controller.abort(), 15000)
 

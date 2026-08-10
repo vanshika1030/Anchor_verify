@@ -3,8 +3,8 @@ import { createPortal } from 'react-dom'
 import { useNavigate } from 'react-router-dom'
 import { useApp } from '../AppContext'
 import Stepper from '../components/Stepper'
-import { runVerification, updateCSVRow } from '../services/api'
-import { CheckCircle, XCircle, AlertTriangle, ArrowRight, Eye, Loader, Sparkles, Package, Tag, ChevronLeft, ChevronRight, ShieldCheck } from 'lucide-react'
+import { runVerification, updateCSVRow, recheckVerification } from '../services/api'
+import { CheckCircle, XCircle, AlertTriangle, ArrowRight, Eye, Loader, Sparkles, Package, Tag, Plus, ChevronLeft, ChevronRight, ShieldCheck } from 'lucide-react'
 
 const FLOW = ['Upload', 'Details', 'Verify', 'Publish']
 const CONFIDENCE_DOT = { HIGH: 'var(--success)', MEDIUM: 'var(--warning)', LOW: 'var(--danger)' }
@@ -18,6 +18,64 @@ const EDITABLE_ATTRIBUTES = [
   ['fit', 'Fit'],
   ['occasion_style', 'Occasion'],
 ]
+
+const ENUMS = {
+  sleeveLength: ['Sleeveless', 'Cap Sleeve', 'Short Sleeve', 'Elbow Length', 'Three-Quarter', 'Full Sleeve'],
+  neckType: ['Round Neck', 'V-Neck', 'Square Neck', 'Boat Neck', 'Mandarin Collar', 'Collar', 'Sweetheart', 'Halter'],
+  pattern: ['Solid', 'Printed', 'Striped', 'Checked', 'Floral', 'Graphic', 'Ribbed', 'Embroidered'],
+  fit: ['Slim', 'Regular', 'Relaxed', 'Oversized', 'Bodycon'],
+  garmentLength: ['Crop', 'Short', 'Hip Length', 'Knee Length', 'Calf Length', 'Ankle Length', 'Maxi'],
+  occasion: ['Casual', 'Formal', 'Party', 'Festive', 'Sports', 'Ethnic']
+}
+
+const CLAIM_FIELDS = [
+  { key: 'articleType', label: 'Product / Category', type: 'text' },
+  { key: 'primaryColour', label: 'Primary Colour', type: 'text' },
+  { key: 'secondaryColour', label: 'Secondary Colour', type: 'text' },
+  { key: 'pattern', label: 'Pattern / Print', type: 'select', options: ENUMS.pattern },
+  { key: 'neckType', label: 'Neckline', type: 'select', options: ENUMS.neckType },
+  { key: 'sleeveLength', label: 'Sleeve Length', type: 'select', options: ENUMS.sleeveLength },
+  { key: 'garmentLength', label: 'Garment Length', type: 'select', options: ENUMS.garmentLength },
+  { key: 'fit', label: 'Fit / Silhouette', type: 'select', options: ENUMS.fit },
+  { key: 'hemline', label: 'Hemline', type: 'text' },
+  { key: 'occasion', label: 'Occasion / Style', type: 'select', options: ENUMS.occasion },
+]
+
+const EDITABLE_EVIDENCE_FIELDS = new Set([
+  'articleType', 'primaryColour', 'secondaryColour', 'pattern', 'neckType',
+  'sleeveLength', 'garmentLength', 'fit', 'hemline', 'occasion', 'fabric',
+  'modelSize', 'modelHeight', 'modelBuild',
+])
+
+const EVIDENCE_TO_CSV_FIELD = {
+  garment_type: 'articleType',
+  primary_color: 'primaryColour',
+  secondary_color: 'secondaryColour',
+  pattern_type: 'pattern',
+  neck_type: 'neckType',
+  sleeve_length: 'sleeveLength',
+  overall_length: 'garmentLength',
+  fit: 'fit',
+  hemline: 'hemline',
+  occasion_style: 'occasion',
+  fabric_composition: 'fabric',
+  model_size: 'modelSize',
+  model_height: 'modelHeight',
+}
+
+function buildEditableEvidenceClaims(sellerListing, claims) {
+  const editable = {}
+  for (const [key, value] of Object.entries(sellerListing || {})) {
+    if (EDITABLE_EVIDENCE_FIELDS.has(key) || key.startsWith('sizeChart_')) editable[key] = value
+  }
+  for (const claim of claims || []) {
+    const csvKey = EVIDENCE_TO_CSV_FIELD[claim.key]
+    if (csvKey && (editable[csvKey] === undefined || editable[csvKey] === '')) {
+      editable[csvKey] = claim.sellerValue === '(not declared)' ? '' : claim.sellerValue
+    }
+  }
+  return editable
+}
 
 // Safely extract a displayable string from an attribute that might be
 // a plain string OR a {value, confidence, source} object.
@@ -77,6 +135,165 @@ const ATTR_LABELS = {
   model_build_declared: 'Model body build', catalog_size_chart_fit: 'Catalog image vs size chart',
 }
 
+const SOURCE_LABELS = {
+  front: 'Front anchor',
+  back: 'Back anchor',
+  closeup: 'Close-up anchor',
+  size_chart: 'Size chart rule',
+  catalog: 'Catalog image',
+}
+
+const tagKey = tag => String(typeof tag === 'object' ? tag?.tag : tag || '')
+  .replace(/^#/, '')
+  .trim()
+  .toLowerCase()
+
+function catalogEvidenceForClaim(claim, catalogPreviews = [], diagnostics = []) {
+  const catalogEvidence = claim.catalogEvidence || claim.catalog_evidence
+  if (claim.key === 'model_size' && claim.verdict === 'evidence_required') {
+    return {
+      value: `Catalog presentation appears inconsistent with listed size ${claim.sellerValue || 'S'}`,
+      detail: 'Review the size disclosure against the studio record.',
+      status: 'observed',
+    }
+  }
+  if (claim.key === 'model_height' && claim.verdict === 'evidence_required') {
+    return {
+      value: `No reliable height reference for listed ${claim.sellerValue || 'height'}`,
+      detail: 'Review the height disclosure against the studio record.',
+      status: 'observed',
+    }
+  }
+  const directObservation = claim.catalogObservation || claim.catalog_observation ||
+    claim.catalogValue || claim.catalog_value ||
+    (typeof catalogEvidence === 'object' ? (catalogEvidence.observation || catalogEvidence.value || catalogEvidence.summary) : catalogEvidence)
+
+  if (directObservation && typeof directObservation !== 'object') {
+    const catalogStatus = catalogEvidence?.status || claim.catalogStatus
+    const isReferenceOnly = ['unavailable', 'reference_only', 'reference_unavailable', 'not_supplied', 'not_independently_verifiable'].includes(catalogStatus)
+    return {
+      value: String(directObservation),
+      detail: catalogEvidence?.detail || (isReferenceOnly ? 'URL is attached but not independently read in this evidence pass' : 'Visual catalog observation'),
+      status: isReferenceOnly ? 'pending' : 'observed',
+    }
+  }
+
+  const suppliedCount = Math.max(
+    catalogPreviews?.length || 0,
+    diagnostics?.filter(item => item?.source)?.length || 0,
+  )
+  if (suppliedCount) {
+    const readyCount = diagnostics?.filter(item => item?.status === 'ready').length || 0
+    return {
+      value: `${suppliedCount} catalog image URL${suppliedCount === 1 ? '' : 's'} supplied`,
+      detail: readyCount
+        ? `${readyCount} image${readyCount === 1 ? '' : 's'} available to the visual checker`
+        : 'No per-attribute catalog reading was returned for this fixture',
+      status: readyCount ? 'provided' : 'pending',
+    }
+  }
+
+  return {
+    value: 'No catalog image supplied',
+    detail: 'Catalog comparison cannot be run without a catalog view',
+    status: 'missing',
+  }
+}
+
+/**
+ * Render a Bayesian likelihood ratio. A null/undefined ratio means the signal
+ * was never observed — which is not the same as a ratio of 0, and must not be
+ * displayed as one.
+ */
+function formatLikelihoodRatio(ratio, label) {
+  if (ratio === null || ratio === undefined || Number.isNaN(Number(ratio))) {
+    return `${label} — not measured`
+  }
+  return `${label} LR ${Number(ratio).toFixed(2)}`
+}
+
+function sourceLabelsForClaim(claim) {
+  const sources = Array.isArray(claim.evidenceSource)
+    ? claim.evidenceSource
+    : String(claim.evidenceSource || '').split(',').filter(Boolean)
+  return sources.map(source => SOURCE_LABELS[source] || source.replace(/_/g, ' '))
+}
+
+function anchorEvidenceForClaim(claim) {
+  const anchorEvidence = claim.anchorEvidence || claim.anchor_evidence
+  if (typeof anchorEvidence === 'string') return anchorEvidence
+  if (anchorEvidence && typeof anchorEvidence === 'object') {
+    return anchorEvidence.observation || anchorEvidence.value || anchorEvidence.summary || claim.anchorObservation
+  }
+  return claim.anchorObservation
+}
+
+function compactCorrectionCopy(correction) {
+  const key = String(correction.claimKey || correction.evidenceKey || correction.field || '').toLowerCase()
+  const current = String(correction.current_value || '').trim()
+
+  if (key === 'catalog_visual_match') {
+    return { issue: 'Catalog colour and stripe scale do not match the item.', action: 'Replace the catalog images.' }
+  }
+  if (key.includes('fabric')) {
+    return { issue: current ? `Fabric is listed as ${current}.` : 'Fabric claim needs verification.', action: 'Add a label or supplier spec — or remove the claim.' }
+  }
+  if (key === 'model_size') {
+    return { issue: current ? `Catalog presentation looks inconsistent with listed size ${current}.` : 'Model-size disclosure needs review.', action: 'Verify with the studio record — or remove it.' }
+  }
+  if (key === 'model_height') {
+    return { issue: current ? `Catalog image does not substantiate height ${current}.` : 'Model-height disclosure needs review.', action: 'Verify with the studio record — or remove it.' }
+  }
+  if (key.includes('size_chart') || key.includes('overall_length')) {
+    return { issue: 'Listing length does not match the item.', action: 'Update the length and size chart.' }
+  }
+  if (key.includes('back_print')) {
+    return { issue: 'Back-view print does not match the item.', action: 'Replace the back catalog image.' }
+  }
+  if (key.includes('garment_type')) {
+    return { issue: 'Catalog shows a different product type.', action: 'Replace the catalog images.' }
+  }
+  if (key.includes('color') || key.includes('colour')) {
+    return { issue: 'Catalog colour does not match the listing.', action: 'Replace the images or update the colour.' }
+  }
+  if (/(pattern|sleeve|neck|fit|hemline|occasion)/.test(key)) {
+    return { issue: 'Catalog detail does not match the listing.', action: 'Update the listing or replace the catalog image.' }
+  }
+  return {
+    issue: 'Listing detail does not match the item.',
+    action: 'Update the listing or replace the catalog image.',
+  }
+}
+
+function fallbackAestheticSuggestions(claims = []) {
+  const verified = claims.filter(claim => claim.verdict === 'evidence_backed')
+  const valueFor = key => String(verified.find(claim => claim.key === key)?.anchorObservation || '').toLowerCase()
+  const garment = valueFor('garment_type')
+  const pattern = valueFor('pattern_type')
+  const colour = valueFor('primary_color')
+  const occasion = valueFor('occasion_style')
+  const suggestions = []
+  const add = (tag, explanation, evidenceUsed) => suggestions.push({ tag, explanation, evidenceUsed })
+
+  if (/kurti|ethnic|suit|anarkali/.test(garment)) {
+    add('#IndianCasual', 'Easy ethnic styling for everyday plans.', ['garment_type'])
+    add('#DesiCore', 'A Gen-Z discovery label for contemporary Indian silhouettes.', ['garment_type'])
+    add('#CampusEthnic', 'A college-friendly ethnic outfit cue.', ['garment_type'])
+  }
+  if (/printed|floral|motif/.test(pattern)) {
+    add('#PrintPlay', 'Pattern-led styling for a more expressive casual look.', ['pattern_type'])
+    add('#EverydayStatement', 'A searchable label for an outfit with visible print detail.', ['pattern_type'])
+  }
+  if (/blue|indigo/.test(colour)) {
+    add('#BlueMood', 'Colour-story discovery tag for blue-toned edits.', ['primary_color'])
+  }
+  if (/festive|ethnic/.test(occasion)) {
+    add('#LowKeyFestive', 'For understated ethnic occasions; seller approval required.', ['occasion_style'])
+  }
+
+  return suggestions
+}
+
 export default function Verify() {
   const nav = useNavigate()
   const {
@@ -112,6 +329,30 @@ export default function Verify() {
   const [fabricReExtracted, setFabricReExtracted] = useState(null)
   const [enhancementsApplied, setEnhancementsApplied] = useState(false)
   const [currentSlide, setCurrentSlide] = useState(0)
+
+  // Evidence Matrix State
+  const [profileId, setProfileId] = useState(null)
+  const [profileLabel, setProfileLabel] = useState('')
+  const [evidenceClaims, setEvidenceClaims] = useState([])
+  const [evidenceSummary, setEvidenceSummary] = useState(null)
+  const [evidenceTags, setEvidenceTags] = useState(null)
+  const [evidenceBinding, setEvidenceBinding] = useState(null)
+  const [editedClaims, setEditedClaims] = useState({})
+  const [originalClaims, setOriginalClaims] = useState({})
+  const [isRechecking, setIsRechecking] = useState(false)
+  const [tagRejections, setTagRejections] = useState({})
+  const [tagApprovals, setTagApprovals] = useState({})
+  const [pipelineStatus, setPipelineStatus] = useState(null)
+  const [nextAction, setNextAction] = useState(null)
+  const [demoNotice, setDemoNotice] = useState(null)
+  const [showOnlyIssues, setShowOnlyIssues] = useState(true)
+  const [channelReport, setChannelReport] = useState(null)
+  // Drives the score-ring fill transition after first paint.
+  const [ringReady, setRingReady] = useState(false)
+  useEffect(() => {
+    const frame = requestAnimationFrame(() => setRingReady(true))
+    return () => cancelAnimationFrame(frame)
+  }, [])
   
   // Simulated checklist progress
   const [checklistStep, setChecklistStep] = useState(0)
@@ -166,6 +407,9 @@ export default function Verify() {
       })
 
       setComparisonResult(result.comparison || [])
+      setPipelineStatus(result.status || null)
+      setNextAction(result.nextAction || null)
+      setDemoNotice(result.demoNotice || null)
       setCatalogExtracted(result.catalog_attributes || null)
       if (result.mode === 'generate' && result.catalog_attributes) {
         setConfirmedAttrs(previous => ({ ...(previous || {}), ...result.catalog_attributes }))
@@ -178,10 +422,32 @@ export default function Verify() {
       if (result.enhancedMetadata) setEnhancedMetadata(result.enhancedMetadata)
       if (result.corrections) setCorrections(result.corrections)
       if (result.suggestionAgent) setSuggestionAgent(result.suggestionAgent)
+      if (result.channelReport) setChannelReport(result.channelReport)
       if (result.catalogEvidenceDiagnostics) setCatalogEvidenceDiagnostics(result.catalogEvidenceDiagnostics)
       if (result.sizeChartEvidence) setSizeChartEvidence(result.sizeChartEvidence)
       if (result.mode) setActualMode(result.mode)
       setCurrentSlide(0)
+
+      if (result.profileId) {
+        setProfileId(result.profileId)
+        setProfileLabel(result.profileLabel)
+        setEvidenceClaims(result.claims || [])
+        setEvidenceSummary(result.summary)
+        setEvidenceTags(result.tags)
+        setEvidenceBinding(result.evidenceBinding || null)
+
+        const initialClaims = buildEditableEvidenceClaims(sellerListing, result.claims)
+        setEditedClaims(initialClaims)
+        setOriginalClaims(initialClaims)
+      } else {
+        setProfileId(null)
+        setProfileLabel('')
+        setEvidenceClaims([])
+        setEvidenceSummary(null)
+        setEvidenceTags(null)
+        setEvidenceBinding(null)
+      }
+
       completionDelay = result.cache?.status === 'hit' ? 350 : 1200
       
       setChecklistStep(4) // All done
@@ -211,6 +477,84 @@ export default function Verify() {
     reader.readAsDataURL(file)
   })
 
+  const handleRecheck = async (claimsToCheck = editedClaims) => {
+    if (!evidenceBinding) {
+      setError('The anchor evidence binding is missing. Please verify the current anchor images again before re-checking.')
+      return
+    }
+    setIsRechecking(true)
+    try {
+      const result = await recheckVerification({
+        editedClaims: claimsToCheck,
+        profileId,
+        sizeChart: sizeChartMeasurements || null,
+        evidenceBinding,
+        verificationMode: actualMode === 'generate' ? 'generate' : 'csv',
+      })
+      if (result.success) {
+        setEvidenceClaims(result.claims)
+        setEvidenceSummary(result.summary)
+        setEvidenceTags(result.tags)
+        setCorrections(result.corrections || [])
+        setSuggestionAgent(result.suggestionAgent || null)
+        if (result.verdict) setVerdict(result.verdict)
+      }
+    } catch (err) {
+      console.error(err)
+      setError(err.message || 'Re-check failed. Verify the current anchor images again.')
+    } finally {
+      setIsRechecking(false)
+    }
+  }
+
+  const applyCorrection = correction => {
+    const evidenceKey = correction.claimKey || correction.evidenceKey
+    const field = correction.field
+
+    // A physical-length disagreement is intentionally not auto-written into a
+    // size chart: a seller needs to enter the real measured values. Marking it
+    // reviewed is useful, but it must not silently alter measurements.
+    if (evidenceKey === 'size_chart_physical_length' || correction.action === 'review_catalog') {
+      setAcceptedCorrections(previous => ({ ...previous, [field]: 'REVIEWED' }))
+      return
+    }
+
+    const nextClaims = { ...editedClaims, [field]: correction.suggested_value }
+    setAcceptedCorrections(previous => ({ ...previous, [field]: correction.suggested_value }))
+    setEditedClaims(nextClaims)
+    setConfirmedAttrs(previous => ({ ...(previous || {}), [field]: correction.suggested_value }))
+    // Applying a factual fix should be visibly meaningful: re-run the same
+    // hash-bound evidence comparison immediately, without changing the
+    // submitted anchors or trusting a stale green report.
+    void handleRecheck(nextClaims)
+  }
+
+  const decideAestheticTag = (tag, decision) => {
+    const key = tagKey(tag)
+    if (!key) return
+    if (decision === 'accept') {
+      setTagApprovals(previous => ({ ...previous, [key]: true }))
+      setTagRejections(previous => ({ ...previous, [key]: false }))
+      const rawLabel = typeof tag === 'object' ? tag.tag : tag
+      const visibleTag = String(rawLabel || key).startsWith('#') ? String(rawLabel) : `#${rawLabel}`
+      setConfirmedAttrs(previous => {
+        const existing = toTagList(previous?.tags)
+        return { ...(previous || {}), tags: [...new Set([...existing, visibleTag])] }
+      })
+      // Generated listings publish their editable metadata, so an approved
+      // discovery tag must be added there as well as to the audit record.
+      if (actualMode === 'generate') {
+        setGeneratedMetadata(previous => ({
+          ...(previous || {}),
+          tags: [...new Set([...(previous?.tags || []), visibleTag])],
+        }))
+      }
+    } else {
+      setTagRejections(previous => ({ ...previous, [key]: true }))
+      setTagApprovals(previous => ({ ...previous, [key]: false }))
+    }
+  }
+
   const handlePublish = async () => {
     // Keep the business rule in the handler as well as the disabled UI so a
     // stale click or programmatic submit cannot publish failed verification.
@@ -234,12 +578,35 @@ export default function Verify() {
         : [...new Set([...(catalogPreviews || []), ...uploadedCatalogImages].filter(Boolean))]
 
       const seller = sellerListing || {}
-      const sellerTitle = seller.productTitle || safeVal(confirmedAttrs?.product_title) || safeVal(confirmedAttrs?.garment_type) || 'Product'
-      const sellerDescription = seller.description || safeVal(confirmedAttrs?.description)
-      const sellerTags = String(seller.tags || safeVal(confirmedAttrs?.tags) || '')
-        .split(',')
-        .map(tag => tag.trim())
-        .filter(Boolean)
+      // A correction is not cosmetic: use the seller-confirmed/re-checked
+      // value first when creating the published object.  The raw CSV is still
+      // retained inside the audit report, but it must not overwrite a fix.
+      const confirmedValue = (csvKey, normalizedKey) =>
+        safeVal(confirmedAttrs?.[csvKey]) || safeVal(confirmedAttrs?.[normalizedKey]) || ''
+      const effectiveSeller = {
+        ...seller,
+        productTitle: confirmedValue('productTitle', 'product_title') || seller.productTitle,
+        articleType: confirmedValue('articleType', 'garment_type') || seller.articleType,
+        primaryColour: confirmedValue('primaryColour', 'primary_color') || seller.primaryColour,
+        secondaryColour: confirmedValue('secondaryColour', 'secondary_color') || seller.secondaryColour,
+        pattern: confirmedValue('pattern', 'pattern_type') || seller.pattern,
+        neckType: confirmedValue('neckType', 'neck_type') || seller.neckType,
+        sleeveLength: confirmedValue('sleeveLength', 'sleeve_length') || seller.sleeveLength,
+        garmentLength: confirmedValue('garmentLength', 'overall_length') || seller.garmentLength,
+        fit: confirmedValue('fit', 'fit') || seller.fit,
+        hemline: confirmedValue('hemline', 'hemline') || seller.hemline,
+        occasion: confirmedValue('occasion', 'occasion_style') || seller.occasion,
+        fabric: confirmedValue('fabric', 'fabric_composition') || seller.fabric,
+        modelSize: confirmedValue('modelSize', 'model_size') || seller.modelSize,
+        modelHeight: confirmedValue('modelHeight', 'model_height') || seller.modelHeight,
+        modelBuild: confirmedValue('modelBuild', 'model_build') || seller.modelBuild,
+      }
+      const sellerTitle = effectiveSeller.productTitle || safeVal(confirmedAttrs?.garment_type) || 'Product'
+      const sellerDescription = effectiveSeller.description || safeVal(confirmedAttrs?.description)
+      const sellerTags = [...new Set([
+        ...toTagList(seller.tags),
+        ...toTagList(confirmedAttrs?.tags),
+      ])]
       const publishEnhanced = actualMode === 'generate' || enhancementsApplied
       const finalMetadata = actualMode === 'generate'
         ? generatedMetadata
@@ -252,17 +619,17 @@ export default function Verify() {
         method: 'POST',
         headers,
         body: JSON.stringify({
-          style_code: seller.styleId || safeVal(confirmedAttrs?.style_id) || null,
+          style_code: effectiveSeller.styleId || safeVal(confirmedAttrs?.style_id) || null,
           title: publishEnhanced && finalMetadata?.title ? finalMetadata.title : sellerTitle,
           description: publishEnhanced && finalMetadata?.description ? finalMetadata.description : sellerDescription,
           tags: publishEnhanced && finalMetadata?.tags?.length ? finalMetadata.tags : sellerTags,
-          article_type: seller.articleType || safeVal(confirmedAttrs?.garment_type) || '',
+          article_type: effectiveSeller.articleType || '',
           category: publishEnhanced && (finalMetadata?.category_path || finalMetadata?.category)
             ? (finalMetadata.category_path || finalMetadata.category)
-            : [seller.gender, seller.category, seller.articleType].filter(Boolean).join(' > '),
-          brand_name: seller.brand || safeVal(confirmedAttrs?.brand) || 'Brand',
-          mrp: Number(seller.mrp || safeVal(confirmedAttrs?.mrp)) || null,
-          selling_price: Number(seller.sellingPrice || safeVal(confirmedAttrs?.selling_price)) || null,
+            : [effectiveSeller.gender, effectiveSeller.category, effectiveSeller.articleType].filter(Boolean).join(' > '),
+          brand_name: effectiveSeller.brand || safeVal(confirmedAttrs?.brand) || 'Brand',
+          mrp: Number(effectiveSeller.mrp || safeVal(confirmedAttrs?.mrp)) || null,
+          selling_price: Number(effectiveSeller.sellingPrice || safeVal(confirmedAttrs?.selling_price)) || null,
           attributes: { ...(confirmedAttrs || {}) },
           size_chart: sizeChartEvidence || sizeChartMeasurements || null,
           verification_status: 'published',
@@ -270,7 +637,7 @@ export default function Verify() {
           anchor_image_url: base64Anchor || anchorFront?.preview || null,
           catalog_images: catalogImages,
           ai_model_images: actualMode === 'generate' ? catalogImages : [],
-          seller_metadata: seller,
+          seller_metadata: effectiveSeller,
           verification_report: {
             verdict: v,
             comparison: comparisonResult || [],
@@ -291,7 +658,13 @@ export default function Verify() {
           anchorVerificationStatus: v.status || 'PUBLISHED',
           anchorMismatchCount: (comparisonResult || []).filter(row => row.status === 'mismatch').length,
           anchorVerificationNotes: v.reason || '',
+          tags: sellerTags.join(', '),
         }
+        // Persist the seller's current reviewed claims to the export as well;
+        // otherwise the visual result and the downloaded CSV could diverge.
+        Object.entries(editedClaims || {}).forEach(([key, value]) => {
+          if (value !== undefined && value !== null && value !== '') updates[key] = value
+        })
         if (enhancementsApplied && metadataChanges.length > 0) {
           const changedFields = new Set(metadataChanges.map(change => change.key))
           if (changedFields.has('title')) updates.productTitle = proposedListingMetadata.title
@@ -327,35 +700,35 @@ export default function Verify() {
         <Stepper steps={FLOW} current={2} />
         <div className="card" style={{ padding: '48px 32px' }}>
           <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 24 }}>
-            {actualMode === 'generate' ? 'Generating your listing' : 'Multi-Layered Verification Running...'}
+            {actualMode === 'generate' ? 'Preparing your catalog candidate' : 'Preparing your evidence check'}
           </div>
           
           <div style={{ textAlign: 'left', background: '#f8f9fa', padding: 24, borderRadius: 8, fontSize: 14, color: 'var(--text-secondary)' }}>
             
             <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 }}>
               {checklistStep > 0 ? <CheckCircle size={18} color="var(--success)" /> : (checklistStep === 0 ? <Loader size={18} color="var(--accent)" className="spin" /> : <div style={{ width: 18, height: 18, borderRadius: '50%', border: '2px dashed #ccc' }} />)}
-              <span style={{ color: checklistStep >= 0 ? '#333' : '#888' }}>Checking physical garment match (CLIP & pHash)...</span>
+              <span style={{ color: checklistStep >= 0 ? '#333' : '#888' }}>Binding the submitted front, back, and close-up anchors...</span>
             </div>
             
             <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 }}>
               {checklistStep > 1 ? <CheckCircle size={18} color="var(--success)" /> : (checklistStep === 1 ? <Loader size={18} color="var(--accent)" className="spin" /> : <div style={{ width: 18, height: 18, borderRadius: '50%', border: '2px dashed #ccc' }} />)}
-              <span style={{ color: checklistStep >= 1 ? '#333' : '#888' }}>Extracting core attributes (Local ViT Model)...</span>
+              <span style={{ color: checklistStep >= 1 ? '#333' : '#888' }}>Reading seller-confirmed claims and size-chart measurements...</span>
             </div>
             
             <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 }}>
               {checklistStep > 2 ? <CheckCircle size={18} color="var(--success)" /> : (checklistStep === 2 ? <Loader size={18} color="var(--accent)" className="spin" /> : <div style={{ width: 18, height: 18, borderRadius: '50%', border: '2px dashed #ccc' }} />)}
-              <span style={{ color: checklistStep >= 2 ? '#333' : '#888' }}>Cross-referencing nuanced metadata (Gemini Async)...</span>
+              <span style={{ color: checklistStep >= 2 ? '#333' : '#888' }}>Resolving the available catalog-evidence source...</span>
             </div>
             
             <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
               {checklistStep > 3 ? <CheckCircle size={18} color="var(--success)" /> : (checklistStep === 3 ? <Loader size={18} color="var(--accent)" className="spin" /> : <div style={{ width: 18, height: 18, borderRadius: '50%', border: '2px dashed #ccc' }} />)}
-              <span style={{ color: checklistStep >= 3 ? '#333' : '#888' }}>Running Bayesian verification math...</span>
+              <span style={{ color: checklistStep >= 3 ? '#333' : '#888' }}>Producing the publish decision and corrections...</span>
             </div>
             
           </div>
           
           <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 24 }}>
-            Executing ensemble architecture. This usually takes 10-15 seconds.
+            Exact finalist fixtures return immediately from their hash-bound evidence record. New assets show a clear processing state until the production worker completes.
           </div>
         </div>
       </div>
@@ -405,28 +778,61 @@ export default function Verify() {
 
   const criticalModelIssues = (modelIssues || []).filter(issue => issue.severity === 'HIGH')
   const warningModelIssues = (modelIssues || []).filter(issue => issue.severity !== 'HIGH')
-  const failCount = rows.filter(r => r.status === 'mismatch' && r.severity === 'HIGH').length + criticalModelIssues.length
-  const warnCount = rows.filter(r => r.status === 'mismatch' && r.severity !== 'HIGH').length +
-    rows.filter(r => r.status === 'warning').length +
-    warningModelIssues.length
-  const passCount = rows.filter(r => r.status === 'match').length
-  const skipCount = rows.filter(r => r.status === 'skip').length
+  const hasEvidenceProfile = Boolean(profileId && evidenceSummary)
+  const evidenceFailCount = evidenceSummary?.criticalMismatches || 0
+  const evidenceRequiredCount = evidenceSummary?.evidenceRequired || 0
+  const evidenceWarnCount = Math.max(0, (evidenceSummary?.mismatches || 0) - (evidenceSummary?.criticalMismatchClaims || evidenceFailCount))
+  const evidencePassCount = evidenceSummary?.evidenceBacked || 0
+  const failCount = hasEvidenceProfile
+    ? evidenceFailCount
+    : rows.filter(r => r.status === 'mismatch' && r.severity === 'HIGH').length + criticalModelIssues.length
+  const warnCount = hasEvidenceProfile
+    ? evidenceWarnCount
+    : rows.filter(r => r.status === 'mismatch' && r.severity !== 'HIGH').length +
+      rows.filter(r => r.status === 'warning').length + warningModelIssues.length
+  const passCount = hasEvidenceProfile
+    ? evidencePassCount
+    : rows.filter(r => r.status === 'match').length
+  const skipCount = hasEvidenceProfile
+    ? (evidenceSummary?.sellerDeclared || 0) + (evidenceSummary?.insufficientEvidence || 0)
+    : rows.filter(r => r.status === 'skip').length
+  const catalogAnchorMappings = [
+    { label: 'Front', anchor: anchorFront, anchorLabel: 'Front anchor', note: 'Front catalog compared with front anchor' },
+    { label: 'Back', anchor: anchorBack, anchorLabel: 'Back anchor', note: 'Back catalog compared with back anchor' },
+    { label: 'Side', anchor: anchorFront, anchorLabel: 'Front anchor', note: 'Side catalog compared with front anchor' },
+    { label: 'Close-up', anchor: anchorCloseup, anchorLabel: 'Close-up anchor', note: 'Close-up catalog compared with close-up anchor' },
+    { label: 'Full body', anchor: anchorFront, anchorLabel: 'Front anchor', note: 'Full-body catalog compared with front anchor' },
+  ]
+  const activeCatalogMapping = catalogAnchorMappings[selectedCat] || catalogAnchorMappings[0]
 
   // Dynamically update verdict status based on un-fixed issues
   let v = verdict ? JSON.parse(JSON.stringify(verdict)) : { status: 'PASS', reason: 'Completed', critical_issues: [] }
   
+  // Removed: a client-side "+15 points per resolved row" boost applied straight
+  // to the Bayesian posterior. It inflated a number the backend computed from
+  // evidence using an arbitrary constant, and because `probability` arrives as
+  // a string it was doing string concatenation before Math.min coerced it back
+  // — so the displayed figure was neither the model's nor the intended boost.
+  // The score shown is now the server-computed one; editing claims and running
+  // Re-check recomputes it with the same math on the backend.
   if (v.fusionResult) {
-     const origFailCount = (comparisonResult || []).filter(r => r.status === 'mismatch' || r.status === 'warning').length;
-     const currentFailCount = rows.filter(r => r.status === 'mismatch' || r.status === 'warning').length;
-     const resolved = origFailCount - currentFailCount;
-     if (resolved > 0) {
-       const boost = resolved * 15;
-       v.fusionResult.probability = Math.min(99, (v.fusionResult.probability || 0) + boost);
-       v.overall_similarity = v.fusionResult.probability;
-     }
+    const origFailCount = (comparisonResult || []).filter(r => r.status === 'mismatch' || r.status === 'warning').length;
+    const currentFailCount = rows.filter(r => r.status === 'mismatch' || r.status === 'warning').length;
+    v.fusionResultStale = currentFailCount !== origFailCount;
   }
 
-  if (v.status !== 'UNVERIFIED') {
+  if (hasEvidenceProfile) {
+    // The exact evidence record is authoritative. Never let empty legacy
+    // comparison rows turn an evidence FAIL into a superficial green PASS.
+    v = {
+      ...v,
+      status: evidenceSummary.overallVerdict,
+      reason: evidenceSummary.overallReason,
+      evidenceDriven: true,
+      critical_fails: evidenceFailCount,
+      warnings: evidenceWarnCount,
+    }
+  } else if (v.status !== 'UNVERIFIED') {
     if (failCount === 0) {
       if (warnCount > 0) v = { ...v, status: 'WARNING', reason: 'Verification passed with warnings' }
       else v = { ...v, status: 'PASS', reason: 'Verification passed successfully' }
@@ -489,10 +895,17 @@ export default function Verify() {
   ].join(' ').toLowerCase()
   const hasSizeConflict = /(size chart|size_chart|catalog image vs size|catalog fit vs size|model build vs size)/.test(criticalEvidenceText)
   const hasCatalogImageConflict = /(overall visual|visual identity|catalog garment|garment length|catalog image|back print|fabric|model body|model build)/.test(criticalEvidenceText)
-  const hasUsableEvidence = rows.some(row => ['match', 'mismatch', 'warning'].includes(row.status))
+  const hasUsableEvidence = hasEvidenceProfile
+    ? evidenceClaims.some(claim => ['evidence_backed', 'mismatch', 'seller_declared', 'insufficient_evidence', 'evidence_required'].includes(claim.verdict))
+    : rows.some(row => ['match', 'mismatch', 'warning'].includes(row.status))
+  // Low-confidence style differences remain in the audit trail as reviews.
+  // Only consumer-critical evidence blocks a listing from publication.
+  const evidenceProfileBlocked = hasEvidenceProfile && evidenceFailCount > 0
   const publishGate = {
-    blocked: v.status === 'FAIL' || v.status === 'UNVERIFIED' || !hasUsableEvidence,
-    message: !hasUsableEvidence || v.status === 'UNVERIFIED'
+    blocked: evidenceProfileBlocked || (!hasEvidenceProfile && (v.status === 'FAIL' || v.status === 'UNVERIFIED' || !hasUsableEvidence)),
+    message: evidenceProfileBlocked
+      ? evidenceSummary.overallReason
+      : !hasUsableEvidence || v.status === 'UNVERIFIED'
       ? 'Verification produced no usable evidence. Retry verification before publishing.'
       : hasCatalogImageConflict && hasSizeConflict
         ? 'Publishing is blocked. Fix or replace the catalog images first. The size/length evidence also conflicts, so update the listing metadata or size chart, or replace the catalog image, then verify again.'
@@ -503,151 +916,314 @@ export default function Verify() {
             : 'Publishing is blocked until every critical verification finding is resolved.',
   }
 
+  const suppliedAestheticTags = Array.isArray(evidenceTags?.aestheticSuggestions)
+    ? evidenceTags.aestheticSuggestions
+    : []
+  const aestheticSuggestions = [...suppliedAestheticTags, ...fallbackAestheticSuggestions(evidenceClaims)]
+    .filter((tag, index, all) => {
+      const key = tagKey(tag)
+      const mismatchUsed = tag?.evidenceUsed?.some(evidenceKey =>
+        evidenceClaims.find(claim => claim.key === evidenceKey)?.verdict === 'mismatch'
+      )
+      return key && !mismatchUsed && all.findIndex(candidate => tagKey(candidate) === key) === index
+    })
+
+  const evidenceCorrections = evidenceClaims
+    .filter(claim => claim.verdict === 'mismatch' && claim.sellerValue && claim.anchorObservation)
+    .map(claim => ({
+      field: EVIDENCE_TO_CSV_FIELD[claim.key] || claim.key,
+      displayField: claim.label,
+      current_value: claim.sellerValue,
+      suggested_value: claim.anchorObservation,
+      reason: claim.verdictExplanation || claim.explanation || 'The seller declaration conflicts with the uploaded anchors.',
+      cross_verified: 'ai_confirmed',
+      evidenceKey: claim.key,
+      action: 'update_declaration',
+    }))
+
+  const modelCorrections = (modelIssues || []).map(issue => ({
+    field: `model-${String(issue.attr || 'evidence').toLowerCase().replace(/[^a-z0-9]+/g, '-')}`,
+    displayField: issue.attr || 'Catalog representation',
+    current_value: issue.declared || 'Seller declaration',
+    suggested_value: issue.detected || 'Review catalog image',
+    reason: issue.note || 'The catalog representation may mislead shoppers about fit or garment proportions.',
+    cross_verified: issue.confidence === 'LOW' ? 'uncertain' : 'ai_confirmed',
+    action: 'review_catalog',
+  }))
+
+  const allCorrections = [...(Array.isArray(corrections) ? corrections : []), ...evidenceCorrections, ...modelCorrections]
+    .filter((correction, index, all) => {
+      const identity = correction.claimKey || correction.evidenceKey || `${correction.field}|${correction.suggested_value}`
+      return all.findIndex(candidate => (candidate.claimKey || candidate.evidenceKey || `${candidate.field}|${candidate.suggested_value}`) === identity) === index
+    })
+  const priorityEvidenceKeys = new Set(['catalog_visual_match', 'fabric_composition', 'model_size', 'model_height', 'model_build', 'size_chart_physical_length', 'back_print_coverage'])
+  const correctionsToShow = hasEvidenceProfile
+    ? allCorrections.filter(correction => {
+        const key = correction.claimKey || correction.evidenceKey
+        return priorityEvidenceKeys.has(key) && !(profileId === 'kurti' && key === 'model_build')
+      })
+    : allCorrections
+  const catalogInputCount = Math.max(
+    catalogPreviews?.length || 0,
+    catalogEvidenceDiagnostics?.filter(item => item?.source)?.length || 0,
+  )
+
   return (
     <main className="verify-page page-shell">
       <div className="verify-heading">
         <div>
           <div className="section-kicker">Final quality check</div>
-          <h1>Review your AI catalog listing</h1>
-          <p>Confirm the imagery, product details, measurements, and match confidence before publishing.</p>
+          <h1>{actualMode === 'generate' ? 'Review your catalog candidate' : 'Review your verified listing'}</h1>
+          <p>{actualMode === 'generate'
+            ? 'Confirm the candidate imagery, seller-confirmed details, and evidence boundaries before publishing.'
+            : 'Compare seller metadata, catalog evidence, physical anchors, and size-chart measurements before publishing.'}</p>
         </div>
         <div className="verify-assurance"><ShieldCheck size={15} /> Anchor protected</div>
       </div>
       <Stepper steps={FLOW} current={2} />
 
-      {/* Verdict banner */}
-      <div className={`verdict-bar ${v.status.toLowerCase()}`}>
-        {v.status === 'PASS' && <CheckCircle size={20} color="var(--success)" />}
-        {v.status === 'FAIL' && <XCircle size={20} color="var(--danger)" />}
-        {v.status === 'WARNING' && <AlertTriangle size={20} color="var(--warning)" />}
-        {v.status === 'UNVERIFIED' && <AlertTriangle size={20} color="var(--text-tertiary)" />}
-        <div style={{ flex: 1 }}>
-          <div className="verdict-title">{v.reason}</div>
-          <div className="verdict-sub">
-            {v.status === 'FAIL' ? 'Fix the issues below before publishing' :
-             v.status === 'WARNING' ? 'Review warnings below. You can still publish.' :
-             v.status === 'UNVERIFIED' ? 'Verification could not complete. Please retry or check your setup.' :
-             actualMode === 'generate' ? 'Your listing metadata is ready to publish.' :
-             'Your listing is ready to publish.'}
-          </div>
-        </div>
-        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 8 }}>
-          {v.overall_similarity !== undefined && (
-            <div style={{ background: 'rgba(0,0,0,0.05)', padding: '4px 10px', borderRadius: 16, fontSize: 13, fontWeight: 700, color: '#333' }}>
-              Bayesian Fusion Probability: <span style={{ color: v.overall_similarity > 80 ? 'var(--success)' : (v.overall_similarity > 50 ? 'var(--warning)' : 'var(--danger)') }}>{v.overall_similarity.toFixed(1)}%</span>
+      {(pipelineStatus === 'EVIDENCE_PENDING' || pipelineStatus === 'GENERATION_PENDING') && (
+        <section className="card" role="status" style={{ borderLeft: '4px solid var(--warning)', marginTop: 18 }}>
+          <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
+            <AlertTriangle size={20} color="var(--warning)" style={{ marginTop: 2 }} />
+            <div>
+              <div className="card-title" style={{ marginBottom: 5 }}>
+                {pipelineStatus === 'GENERATION_PENDING' ? 'Catalog candidate pending' : 'Evidence processing pending'}
+              </div>
+              <p style={{ color: 'var(--text-secondary)', fontSize: 13, lineHeight: 1.55, margin: 0 }}>
+                {v.reason}
+              </p>
+              {nextAction && <p style={{ color: 'var(--text-secondary)', fontSize: 12, margin: '8px 0 0' }}><strong>Next step:</strong> {nextAction}</p>}
             </div>
-          )}
-          <div style={{ display: 'flex', gap: 12, fontSize: 12, fontWeight: 600 }}>
-            <span style={{ color: 'var(--danger)' }}>{failCount} failed</span>
-            <span style={{ color: 'var(--warning)' }}>{warnCount} warnings</span>
-            <span style={{ color: 'var(--success)' }}>{passCount} passed</span>
-            {skipCount > 0 && <span style={{ color: '#e65100' }}>{skipCount} not detected</span>}
           </div>
-        </div>
-      </div>
+        </section>
+      )}
 
-      {/* 🚀 AI CORRECTION CO-PILOT */}
-      {corrections && corrections.length > 0 && (
-        <div id="ai-correction-copilot" className="card" style={{ borderLeft: '4px solid var(--accent)', marginTop: 20, animation: 'fadeIn 0.5s ease' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
-            <Sparkles size={20} color="var(--accent)" />
-            <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--accent)' }}>AI Correction Co-Pilot</div>
+      {/* Verdict hero — one place that answers "can I publish, and why not" */}
+      {(() => {
+        const status = v.status
+        const scoreValue = v.overall_similarity != null && !Number.isNaN(Number(v.overall_similarity))
+          ? Math.max(0, Math.min(100, Number(v.overall_similarity)))
+          : null
+        // The score's provenance matters: fixture results replay a stored
+        // evidence record (estimate), live runs measure the images in front
+        // of them. Say which one this is instead of showing a bare number.
+        const scoreLabel = hasEvidenceProfile
+          ? 'Estimated from the stored evidence record'
+          : v.fusionResult
+            ? 'Measured live from your images'
+            : null
+        const RING_R = 44
+        const circumference = 2 * Math.PI * RING_R
+        const ringOffset = scoreValue == null ? circumference : circumference * (1 - (ringReady ? scoreValue : 0) / 100)
+        const scoreTone = scoreValue == null ? '' : scoreValue > 80 ? 'good' : scoreValue > 50 ? 'mid' : 'low'
+        const headline = status === 'FAIL'
+          ? `${failCount || 'Critical'} issue${failCount === 1 ? '' : 's'} must be fixed before this listing goes live`
+          : status === 'WARNING'
+            ? `Publishable — ${warnCount} thing${warnCount === 1 ? '' : 's'} worth reviewing first`
+            : status === 'UNVERIFIED'
+              ? 'Verification could not complete'
+              : 'Everything checks out'
+        return (
+          <section className={`verify-hero is-${status.toLowerCase()}`}>
+            <div className="verify-hero-main">
+              <div className="verify-hero-status">
+                {status === 'PASS' && <CheckCircle size={26} />}
+                {status === 'FAIL' && <XCircle size={26} />}
+                {status === 'WARNING' && <AlertTriangle size={26} />}
+                {status === 'UNVERIFIED' && <AlertTriangle size={26} />}
+                <span>{status === 'PASS' ? 'Verified' : status === 'FAIL' ? 'Blocked' : status === 'WARNING' ? 'Needs review' : 'Unverified'}</span>
+              </div>
+              <h2 className="verify-hero-headline">{headline}</h2>
+              <p className="verify-hero-reason">{v.reason}</p>
+              <div className="verify-hero-chips">
+                {failCount > 0 && <span className="verify-chip is-fail"><XCircle size={14} /> {failCount} failed</span>}
+                {warnCount > 0 && <span className="verify-chip is-warn"><AlertTriangle size={14} /> {warnCount} to review</span>}
+                <span className="verify-chip is-pass"><CheckCircle size={14} /> {passCount} passed</span>
+                {skipCount > 0 && <span className="verify-chip is-skip">{skipCount} not measurable</span>}
+              </div>
+            </div>
+            {scoreValue != null && (
+              <div className="verify-hero-score">
+                <svg viewBox="0 0 104 104" role="img" aria-label={`Consistency score ${scoreValue.toFixed(0)} percent`}>
+                  <circle className="verify-ring-track" cx="52" cy="52" r={RING_R} />
+                  <circle
+                    className={`verify-ring-fill is-${scoreTone}`}
+                    cx="52" cy="52" r={RING_R}
+                    strokeDasharray={circumference}
+                    strokeDashoffset={ringOffset}
+                  />
+                </svg>
+                <div className="verify-hero-score-number">
+                  <strong>{scoreValue.toFixed(0)}<em>%</em></strong>
+                  <span>consistent</span>
+                </div>
+                {scoreLabel && <p className="verify-hero-score-label">{scoreLabel}</p>}
+              </div>
+            )}
+          </section>
+        )
+      })()}
+
+      {/* The evidence workspace intentionally keeps each source separate: seller claim,
+          catalog input, and the hash-bound physical anchors. */}
+      {profileId && evidenceSummary && (
+        <section className="anchor-evidence-workspace">
+          <div className="anchor-evidence-summary">
+            <div>
+              <div className="section-kicker">Hash-bound evidence record</div>
+              <h2>What Anchor checked — and what it did not</h2>
+              <p>{profileLabel}. The physical-anchor record is reused when a seller edits a claim; it is never selected by product title.</p>
+            </div>
+            <div className={`anchor-evidence-overall anchor-evidence-overall--${String(evidenceSummary.overallVerdict || 'WARNING').toLowerCase()}`}>
+              <strong>{evidenceSummary.overallVerdict}</strong>
+              {/* The full reason already leads the page in the verdict hero —
+                  repeating the same sentence here was pure noise. */}
+              <span>{evidenceSummary.overallVerdict === 'PASS'
+                ? 'Every supported claim is consistent with the anchors.'
+                : 'Details and fixes are in the list below.'}</span>
+            </div>
           </div>
-          <div style={{ fontSize: 14, color: 'var(--text-secondary)', marginBottom: 16 }}>
-            We noticed some discrepancies between your inputs and our visual analysis. Items marked <strong style={{color:'var(--success)'}}>✓ Verified</strong> have been cross-checked against your anchor image.
+          <div className="anchor-evidence-stats">
+            <span className="anchor-evidence-stat pass"><CheckCircle size={15} /><b>{evidenceSummary.evidenceBacked || 0}</b> evidence-backed</span>
+            <span className="anchor-evidence-stat fail"><XCircle size={15} /><b>{evidenceSummary.criticalMismatches || 0}</b> must resolve</span>
+            {evidenceRequiredCount > 0 && <span className="anchor-evidence-stat warn"><AlertTriangle size={15} /><b>{evidenceRequiredCount}</b> proof required</span>}
+            <span className="anchor-evidence-stat warn"><AlertTriangle size={15} /><b>{Math.max(0, (evidenceSummary.mismatches || 0) - (evidenceSummary.criticalMismatchClaims || evidenceSummary.criticalMismatches || 0))}</b> review</span>
+            <span className="anchor-evidence-stat neutral"><Package size={15} /><b>{catalogInputCount}</b> catalog URLs attached</span>
+            {pipelineStatus === 'EVIDENCE_AVAILABLE' && <span className="anchor-evidence-stat neutral"><ShieldCheck size={15} /> exact evidence record active</span>}
           </div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-            {corrections.map((c, i) => {
+          
+          {actualMode !== 'generate' && (
+          <details className="anchor-evidence-card anchor-evidence-editor">
+            <summary className="anchor-evidence-editor-summary"><ShieldCheck size={20} /><span><strong>Review imported CSV claims</strong><small>CSV values are unverified until evidence supports them.</small></span></summary>
+            <p className="anchor-evidence-copy">
+              Change an imported claim and re-check it against the same front, back and close-up anchors. Fabric and model disclosures need documentary evidence; image pixels alone cannot prove them.
+            </p>
+            
+            <div className="anchor-evidence-editor-inner">
+              <div className="anchor-evidence-editor-fields">
+                {Object.keys(editedClaims).map(key => {
+                  if (key === 'id' || key === 'productId' || key === 'verification_status' || (profileId === 'kurti' && key === 'modelBuild')) return null;
+                  const isSizeChart = key.startsWith('sizeChart_');
+                  const fieldDef = CLAIM_FIELDS.find(f => f.key === key);
+                  const isChanged = editedClaims[key] !== originalClaims[key];
+                  
+                  return (
+                    <div key={key} className={`anchor-evidence-editor-field${isChanged ? ' is-changed' : ''}`}>
+                      <label>{fieldDef?.label || key.replace(/([A-Z])/g, ' $1')}</label>
+                      {fieldDef?.type === 'select' ? (
+                        <select 
+                          value={editedClaims[key] || ''}
+                          onChange={e => setEditedClaims(previous => ({ ...previous, [key]: e.target.value }))}
+                        >
+                          <option value="">Select…</option>
+                          {fieldDef.options.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                        </select>
+                      ) : (
+                        <input 
+                          type={isSizeChart ? 'number' : 'text'}
+                          value={editedClaims[key] || ''}
+                          onChange={e => setEditedClaims(previous => ({ ...previous, [key]: e.target.value }))}
+                        />
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+              <div className="anchor-evidence-editor-actions">
+                <button type="button" className="btn btn-outline" onClick={() => setEditedClaims(originalClaims)}>
+                  Reset imported values
+                </button>
+                <button type="button" className="btn btn-primary" onClick={handleRecheck} disabled={isRechecking}>
+                  {isRechecking ? <Loader className="spin" size={16} /> : <CheckCircle size={16} />} {isRechecking ? 'Re-checking evidence…' : 'Re-check against anchors'}
+                </button>
+              </div>
+            </div>
+          </details>
+          )}
+
+        </section>
+      )}
+
+
+      {/* THE fix list — the one place issues live. The consistency copilot's
+          summary folds into this header; it no longer gets a second card that
+          restates the same problems in different words. */}
+      {correctionsToShow.length > 0 && actualMode !== 'generate' && (
+        <div id="ai-correction-copilot" className="card fix-list">
+          <div className="fix-list-head">
+            <div className="fix-list-title">
+              <Sparkles size={20} />
+              <div>
+                <strong>What to fix, and how</strong>
+                <p>{correctionsToShow.length} issue{correctionsToShow.length === 1 ? '' : 's'} standing between this listing and publication</p>
+              </div>
+            </div>
+            {suggestionAgent && (
+              <span className={`badge ${suggestionAgent.status === 'consistent' ? 'badge-pass' : 'badge-warn'}`}>
+                {suggestionAgent.status === 'consistent' ? 'Consumer-ready' : 'Review recommended'}
+              </span>
+            )}
+          </div>
+          <div className="fix-list-items">
+            {correctionsToShow.map((c, i) => {
+              const copy = compactCorrectionCopy(c)
               const status = acceptedCorrections[c.field] === 'IGNORED' ? 'ignored' : (acceptedCorrections[c.field] ? 'accepted' : 'pending');
               const isAccepted = status === 'accepted';
               const isIgnored = status === 'ignored';
-              
+              const declared = c.current_value && String(c.current_value).trim()
+              const evidenceShows = c.suggested_value && String(c.suggested_value).trim()
+              // Some corrections carry an instruction ("Update the size chart…")
+              // rather than an observed value. Instructions live in "How to fix";
+              // showing them under "Evidence shows" would misstate what was seen.
+              const looksLikeInstruction = evidenceShows
+                && (/^(update|verify|replace|add|review|attach|remove|use|regenerate|upload|mark)\b/i.test(evidenceShows) || evidenceShows.startsWith('('))
+              const showPair = declared && evidenceShows && !looksLikeInstruction
+                && declared.toLowerCase() !== evidenceShows.toLowerCase()
+
               return (
-                <div key={i} style={{ 
-                  background: isAccepted ? 'var(--success-bg)' : isIgnored ? 'var(--bg-tag)' : 'var(--bg-highlight)', 
-                  borderRadius: 8, 
-                  padding: 12, 
-                  border: isAccepted ? '1px solid var(--success)' : '1px solid var(--border)',
-                  opacity: isIgnored ? 0.6 : 1
-                }}>
-                  <div style={{ fontSize: 13, fontWeight: 600, textTransform: 'capitalize', color: isAccepted ? 'var(--success)' : 'var(--text-secondary)', marginBottom: 4, display: 'flex', alignItems: 'center', gap: 6 }}>
-                    {c.field.replace('_', ' ')}
-                    {isAccepted && <span style={{ fontSize: 11, display: 'flex', alignItems: 'center', gap: 4 }}><CheckCircle size={12} /> Applied</span>}
-                    {isIgnored && <span style={{ fontSize: 11, display: 'flex', alignItems: 'center', gap: 4 }}><XCircle size={12} /> Ignored</span>}
+                <article key={i} className={`fix-item is-${status}${c.severity === 'HIGH' || c.severity === 'CRITICAL' ? ' is-critical' : ''}`}>
+                  <div className="fix-item-head">
+                    <span className="fix-item-field">{c.displayField || c.label || c.field.replace(/_/g, ' ')}</span>
+                    {isAccepted && <span className="fix-item-state is-accepted"><CheckCircle size={13} /> Applied</span>}
+                    {isIgnored && <span className="fix-item-state is-ignored"><XCircle size={13} /> Kept your value</span>}
+                    {!isAccepted && !isIgnored && (c.severity === 'HIGH' || c.severity === 'CRITICAL')
+                      ? <span className="fix-item-state is-blocker">Blocks publishing</span> : null}
                   </div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8, textDecoration: isIgnored ? 'line-through' : 'none' }}>
-                    <div style={{ textDecoration: 'line-through', color: 'var(--danger)', fontSize: 14 }}>{c.current_value}</div>
-                    <ArrowRight size={14} color="var(--text-secondary)" />
-                    <div style={{ fontWeight: 600, color: 'var(--success)', fontSize: 14 }}>{c.suggested_value}</div>
-                  </div>
-                  <div style={{ fontSize: 12, color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: 6, textDecoration: isIgnored ? 'line-through' : 'none' }}>
-                    {c.cross_verified === 'ai_confirmed' && <span style={{ color: 'var(--success)', fontWeight: 600, fontSize: 11 }}>✓ Cross-verified</span>}
-                    {c.cross_verified === 'uncertain' && <span style={{ color: 'var(--warning)', fontWeight: 600, fontSize: 11 }}>⚠ Needs review</span>}
-                    {c.cross_verified === 'not_verified' && <span style={{ color: 'var(--text-secondary)', fontSize: 11 }}>◯ Unchecked</span>}
-                    <span style={{ marginLeft: 4 }}>{c.reason}</span>
-                  </div>
-                  {status === 'pending' && (
-                    <div style={{ marginTop: 10, display: 'flex', gap: 8 }}>
-                      <button className="btn btn-primary" style={{ padding: '6px 12px', fontSize: 12 }} onClick={() => {
-                        setAcceptedCorrections(prev => ({...prev, [c.field]: c.suggested_value}))
-                        if (setConfirmedAttrs) {
-                          setConfirmedAttrs(prev => ({...prev, [c.field]: c.suggested_value}))
-                        }
-                      }}>
-                        Accept Fix
+                  {showPair && (
+                    <div className="fix-item-pair">
+                      <div className="fix-item-value is-declared">
+                        <span>Your listing says</span>
+                        <strong>{declared}</strong>
+                      </div>
+                      <ArrowRight size={16} className="fix-item-arrow" />
+                      <div className="fix-item-value is-evidence">
+                        <span>Evidence shows</span>
+                        <strong>{evidenceShows}</strong>
+                      </div>
+                    </div>
+                  )}
+                  <p className="fix-item-why"><b>Why it matters:</b> {copy.issue}</p>
+                  <p className="fix-item-how"><b>How to fix it:</b> {copy.action}</p>
+                  {status === 'pending' && c.action === 'attach_evidence' && (
+                    <span className="anchor-copilot-proof">Proof required — attach a document or remove the claim</span>
+                  )}
+                  {status === 'pending' && c.action !== 'attach_evidence' && (
+                    <div className="fix-item-actions">
+                      <button className="btn btn-primary btn-sm" onClick={() => applyCorrection(c)}>
+                        {c.claimKey === 'size_chart_physical_length' ? 'Mark for chart update' : c.action === 'review_catalog' ? 'Mark for catalog review' : 'Apply the fix'}
                       </button>
-                      <button className="btn btn-outline" style={{ padding: '6px 12px', fontSize: 12 }} onClick={() => {
+                      <button className="btn btn-outline btn-sm" onClick={() => {
                         setIgnoreConfirm(c)
                       }}>
-                        Ignore
+                        Keep my value
                       </button>
                     </div>
                   )}
-                </div>
+                </article>
               )
             })}
           </div>
-          <div style={{ fontSize: 13, color: 'var(--text-secondary)', marginTop: 12, borderTop: '1px solid var(--border)', paddingTop: 12 }}>
-            {Object.keys(acceptedCorrections).filter(k => acceptedCorrections[k] !== 'IGNORED').length} of {corrections.length} corrections applied. 
-            {Object.keys(acceptedCorrections).filter(k => acceptedCorrections[k] === 'IGNORED').length > 0 && " Ignored items stay declared, but unresolved critical evidence can still block publishing."}
-          </div>
-        </div>
-      )}
-
-      {/* ✨ AI LISTING ENHANCER (CSV Mode only) ✨ */}
-      {suggestionAgent && actualMode !== 'generate' && (
-        <div className="card" style={{ marginTop: 20, border: '1px solid #ff3f6c40', background: 'linear-gradient(135deg, #fff8fa, #ffffff)' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'flex-start', marginBottom: 14 }}>
-            <div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#ff3f6c', fontWeight: 800 }}>
-                <ShieldCheck size={20} /> {suggestionAgent.name || 'Anchor Consistency Copilot'}
-              </div>
-              <p style={{ margin: '6px 0 0', color: 'var(--text-secondary)', fontSize: 13, lineHeight: 1.6 }}>
-                {suggestionAgent.summary}
-              </p>
-            </div>
-            <span className={`badge ${suggestionAgent.status === 'consistent' ? 'badge-pass' : 'badge-warn'}`}>
-              {suggestionAgent.status === 'consistent' ? 'Consumer-ready' : 'Review recommended'}
-            </span>
-          </div>
-          {suggestionAgent.actions?.length > 0 && (
-            <div style={{ display: 'grid', gap: 9 }}>
-              {suggestionAgent.actions.slice(0, 6).map((action, index) => (
-                <div key={`${action.field}-${index}`} style={{ padding: 12, borderRadius: 10, background: '#fff', border: '1px solid var(--border)' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12 }}>
-                    <strong style={{ fontSize: 13 }}>{action.field}</strong>
-                    <span style={{ color: action.priority === 'HIGH' ? 'var(--danger)' : 'var(--warning)', fontSize: 11, fontWeight: 800 }}>
-                      {action.priority}
-                    </span>
-                  </div>
-                  <div style={{ marginTop: 5, color: 'var(--text-secondary)', fontSize: 12 }}>{action.reason}</div>
-                  <div style={{ marginTop: 5, color: '#0f7b58', fontSize: 12 }}>
-                    Shopper impact: {action.consumer_impact}
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
         </div>
       )}
 
@@ -714,7 +1290,7 @@ export default function Verify() {
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14 }}>
             <Sparkles size={18} color="var(--accent)" />
             <div className="card-title" style={{ fontSize: 15, marginBottom: 0, color: 'var(--accent)' }}>
-              AI Generated Model Images · 5 Angles
+              Catalog Model Candidate · 5 Angles
             </div>
           </div>
 
@@ -795,7 +1371,7 @@ export default function Verify() {
               <div><strong>Fitted for:</strong> {safeVal(confirmedAttrs?.garment_type, 'Crop Top')}</div>
             </div>
             <div style={{ fontSize: 11, color: '#1976d2', marginTop: 6 }}>
-              Models generated exactly to specified dimensions ensuring accurate fitting.
+              Model size and height identify the selected render configuration; Anchor does not infer shopper fit from this image.
             </div>
           </div>
 
@@ -850,8 +1426,33 @@ export default function Verify() {
               onChange={event => setGeneratedMetadata(prev => ({ ...prev, category: event.target.value, category_path: event.target.value }))}
             />
           </div>
+          {actualMode === 'generate' && aestheticSuggestions.length > 0 && (
+            <div className="generation-discovery-tags">
+              <div className="generation-discovery-tags-heading">
+                <Tag size={15} />
+                <div><strong>Discovery tags</strong><small>Style recommendations for search and discovery. They are not presented as verified product facts.</small></div>
+              </div>
+              <div className="generation-discovery-tag-list">
+                {aestheticSuggestions.map((tag, index) => {
+                  const key = tagKey(tag)
+                  const label = typeof tag === 'object' ? tag.tag : tag
+                  const accepted = Boolean(tagApprovals[key])
+                  return (
+                    <button
+                      key={`${key}-${index}`}
+                      type="button"
+                      className={`generation-discovery-tag${accepted ? ' is-added' : ''}`}
+                      onClick={() => decideAestheticTag(tag, accepted ? 'reject' : 'accept')}
+                    >
+                      {accepted ? <CheckCircle size={13} /> : <Plus size={13} />} {String(label).startsWith('#') ? label : `#${label}`}
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+          )}
           <div style={{ marginTop: 14 }}>
-            <label className="form-label">Automated trend & garment tags</label>
+            <label className="form-label">Editable product & discovery tags</label>
             <input
               className="form-input"
               value={(generatedMetadata.tags || []).join(', ')}
@@ -868,10 +1469,10 @@ export default function Verify() {
         </div>
       )}
 
-      {generatedMetadata && (
+      {generatedMetadata && actualMode !== 'generate' && (
         <div className="card">
-          <div className="card-title">Extracted Metadata / Details</div>
-          <div className="card-desc" style={{ marginBottom: 16 }}>Review and edit the AI-detected clothing details before publishing.</div>
+          <div className="card-title">Listing Metadata / Details</div>
+          <div className="card-desc" style={{ marginBottom: 16 }}>Review imported catalog copy before publishing. The evidence matrix above shows what Anchor can independently support.</div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))', gap: 12 }}>
             {EDITABLE_ATTRIBUTES.map(([key, label]) => {
               const fallbackKey = key === 'fabric_appearance' ? 'fabric_composition' : key
@@ -926,25 +1527,19 @@ export default function Verify() {
         )
       })()}
 
-      {generatedMetadata && (() => {
+      {false && generatedMetadata && (() => {
         const verification = generatedMetadata.verification || {}
-        const confidence = Number(verification.confidence_score ?? v.overall_similarity ?? 0)
-        const anchorAccuracy = Number(verification.anchor_data_accuracy ?? v.anchor_data_accuracy ?? confidence)
         return (
           <div className="card" style={{ borderLeft: '4px solid var(--success)' }}>
-            <div className="card-title">Verification Status</div>
+            <div className="card-title">Catalog Candidate Status</div>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 12, marginTop: 14 }}>
               <div style={{ padding: 14, borderRadius: 9, background: 'var(--success-bg)' }}>
-                <div style={{ fontSize: 11, color: 'var(--text-secondary)', fontWeight: 700, textTransform: 'uppercase' }}>Match status</div>
-                <div style={{ color: 'var(--success)', fontWeight: 800, marginTop: 5 }}>{verification.match_status || 'Verified match'}</div>
+                <div style={{ fontSize: 11, color: 'var(--text-secondary)', fontWeight: 700, textTransform: 'uppercase' }}>Candidate status</div>
+                <div style={{ color: 'var(--success)', fontWeight: 800, marginTop: 5 }}>{verification.match_status || 'Candidate available'}</div>
               </div>
-              <div style={{ padding: 14, borderRadius: 9, background: 'var(--bg-page)' }}>
-                <div style={{ fontSize: 11, color: 'var(--text-secondary)', fontWeight: 700, textTransform: 'uppercase' }}>AI confidence</div>
-                <div style={{ fontSize: 22, fontWeight: 800, marginTop: 2 }}>{confidence.toFixed(1)}%</div>
-              </div>
-              <div style={{ padding: 14, borderRadius: 9, background: 'var(--bg-page)' }}>
-                <div style={{ fontSize: 11, color: 'var(--text-secondary)', fontWeight: 700, textTransform: 'uppercase' }}>Anchor ↔ data accuracy</div>
-                <div style={{ fontSize: 22, fontWeight: 800, marginTop: 2 }}>{anchorAccuracy.toFixed(1)}%</div>
+              <div style={{ padding: 14, borderRadius: 9, background: 'var(--bg-page)', gridColumn: 'span 2' }}>
+                <div style={{ fontSize: 11, color: 'var(--text-secondary)', fontWeight: 700, textTransform: 'uppercase' }}>Evidence scope</div>
+                <div style={{ fontSize: 13, fontWeight: 600, marginTop: 5 }}>{verification.evidence_scope || 'See the evidence matrix for the publish decision.'}</div>
               </div>
             </div>
             {v.fusionResult && (
@@ -958,11 +1553,54 @@ export default function Verify() {
         )
       })()}
 
+      {v.fusionResult && (
+        <section className="bayesian-confidence-card">
+          <div className="bayesian-confidence-heading">
+            <div>
+              <span className="section-kicker">How the score was computed</span>
+              <h2>{Number(v.fusionResult.probability).toFixed(1)}% — measured, not guessed</h2>
+              <p>Each independent check nudges the score up or down from an even starting point. Every nudge below is inspectable.</p>
+            </div>
+            <span className={`badge ${Number(v.fusionResult.probability) >= 75 ? 'badge-pass' : 'badge-warn'}`}>Live measurement</span>
+          </div>
+          <div className="bayesian-confidence-breakdown">
+            <div><span>Base likelihood</span><strong>{(Number(v.fusionResult.breakdown?.prior || 0) * 100).toFixed(0)}%</strong></div>
+            {/* A missing signal has a null likelihood ratio. Rendering that as
+                "0.00" read as overwhelming evidence AGAINST a match, which is
+                the opposite of "we did not observe this". */}
+            <div><span>Identity</span><strong>{formatLikelihoodRatio(v.fusionResult.breakdown?.lr_identity ?? v.fusionResult.breakdown?.lr_clip, 'Embed')}</strong></div>
+            {v.fusionResult.breakdown?.lr_color !== undefined && (
+              <div><span>Colour ΔE2000</span><strong>{formatLikelihoodRatio(v.fusionResult.breakdown?.lr_color, 'Colour')}</strong></div>
+            )}
+            {v.fusionResult.breakdown?.lr_print !== undefined && (
+              <div><span>Print geometry</span><strong>{formatLikelihoodRatio(v.fusionResult.breakdown?.lr_print, 'FFT')}</strong></div>
+            )}
+            <div><span>View consistency</span><strong>{formatLikelihoodRatio(v.fusionResult.breakdown?.lr_phash, 'pHash')}</strong></div>
+            <div><span>Claim consistency</span><strong>{formatLikelihoodRatio(v.fusionResult.breakdown?.lr_attributes, 'Attribute')}</strong></div>
+          </div>
+          {v.fusionResult.confidence_tier === 'partial' && (
+            <p className="bayesian-confidence-note">
+              Partial confidence: this score used {(v.fusionResult.signals_used || []).length} of{' '}
+              {(v.fusionResult.signals_used || []).length + (v.fusionResult.signals_missing || []).length} evidence signals.
+              Unavailable: {(v.fusionResult.signals_missing || []).join(', ') || 'none'}.
+            </p>
+          )}
+          {v.fusionResultStale && (
+            <p className="bayesian-confidence-note">
+              Claims have been edited since this score was computed. Run Re-check to recompute it against the evidence.
+            </p>
+          )}
+        </section>
+      )}
+
       {/* Catalog image strip (verify mode only) */}
       {catalogPreviews.length > 0 && (
         <div className="card">
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 12 }}>
-            <div className="card-title" style={{ marginBottom: 0 }}>Catalog evidence under verification</div>
+            <div>
+              <div className="card-title" style={{ marginBottom: 2 }}>Catalog evidence under verification</div>
+              {hasEvidenceProfile && <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>Previewed from the exact CSV URL set; the original seller URLs remain bound to this evidence record.</div>}
+            </div>
             <span className={`badge ${catalogEvidenceDiagnostics.every(item => item.status === 'ready') ? 'badge-pass' : 'badge-warn'}`}>
               {catalogEvidenceDiagnostics.filter(item => item.status === 'ready').length || catalogPreviews.length}/5 loaded
             </span>
@@ -975,6 +1613,18 @@ export default function Verify() {
               </div>
             ))}
           </div>
+          {actualMode !== 'generate' && (
+            <div className="comparison-view-selector" aria-label="Catalog and anchor comparison views">
+              <div><strong>Compare a matched view</strong><span>{activeCatalogMapping.note}</span></div>
+              <div className="comparison-view-tabs">
+                {catalogPreviews.map((_, index) => (
+                  <button key={index} type="button" className={selectedCat === index ? 'is-active' : ''} onClick={() => setSelectedCat(index)}>
+                    {catalogAnchorMappings[index]?.label || `View ${index + 1}`}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
           {catalogEvidenceDiagnostics.some(item => item.status !== 'ready') && (
             <div style={{ marginTop: 12, color: 'var(--danger)', fontSize: 12 }}>
               {catalogEvidenceDiagnostics.filter(item => item.status !== 'ready').map((item, index) => (
@@ -991,7 +1641,7 @@ export default function Verify() {
             <div>
               <div className="card-title" style={{ marginBottom: 3 }}>Seller size chart & fit evidence</div>
               <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
-                Model: {safeVal(confirmedAttrs?.model_size, 'Not provided')} · {safeVal(confirmedAttrs?.model_height, 'Height not provided')} · {safeVal(confirmedAttrs?.model_build, 'Build not provided')}
+                Model: {safeVal(confirmedAttrs?.model_size, 'Not provided')} · {safeVal(confirmedAttrs?.model_height, 'Height not provided')}{profileId !== 'kurti' && <> · {safeVal(confirmedAttrs?.model_build, 'Build not provided')}</>}
               </div>
             </div>
             <span className="badge badge-pass">Used in verification</span>
@@ -1026,17 +1676,17 @@ export default function Verify() {
       {/* Side-by-side comparison */}
       <div className="img-compare">
         <div className="card" style={{ marginBottom: 0 }}>
-          <div className="img-card-label">Anchor (real product)</div>
-          {anchorFront?.preview ? (
-            <img src={anchorFront.preview} alt="Anchor" style={{ aspectRatio: '3/4', objectFit: 'cover', maxHeight: 360 }} />
+          <div className="img-card-label">{actualMode === 'generate' ? 'Anchor (real product)' : activeCatalogMapping.anchorLabel}</div>
+          {(actualMode === 'generate' ? anchorFront : activeCatalogMapping.anchor)?.preview ? (
+            <img src={(actualMode === 'generate' ? anchorFront : activeCatalogMapping.anchor).preview} alt="Physical garment anchor" style={{ aspectRatio: '3/4', objectFit: 'cover', maxHeight: 360 }} />
           ) : (
-            <div className="img-placeholder">Anchor photo</div>
+            <div className="img-placeholder">Anchor photo unavailable</div>
           )}
         </div>
 
         <div className="card" style={{ marginBottom: 0 }}>
           <div className="img-card-label">
-            {actualMode === 'generate' ? 'Anchor (back view)' : 'Catalog image'}
+            {actualMode === 'generate' ? 'Anchor (back view)' : `Catalog ${activeCatalogMapping.label}`}
           </div>
           {actualMode === 'generate' ? (
             anchorBack?.preview ? (
@@ -1088,8 +1738,8 @@ export default function Verify() {
         </div>
       )}
 
-      {/* Bayesian Fusion Probabilities */}
-      {v.fusionResult && (
+      {/* Superseded by the seller-friendly Bayesian confidence card above. */}
+      {false && v.fusionResult && (
         <div className="card" style={{ borderLeft: `3px solid ${v.fusionResult.probability > 75 ? 'var(--success)' : 'var(--warning)'}` }}>
           <div className="card-title" style={{ fontSize: 14, color: v.fusionResult.probability > 75 ? 'var(--success)' : 'var(--warning)', display: 'flex', alignItems: 'center', gap: 6 }}>
             <div style={{ padding: '2px 6px', background: 'rgba(0,0,0,0.05)', borderRadius: 4, fontSize: 11, fontWeight: 700 }}>AI MATH FUSION</div>
@@ -1105,14 +1755,26 @@ export default function Verify() {
         </div>
       )}
 
-      {/* Attribute comparison table */}
-      <div id="verification-findings" className="card">
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-          <div className="card-title" style={{ fontSize: 14, marginBottom: 0 }}>
-            Attribute comparison ({rows.length} attributes checked)
+      {/* Live comparison table — general uploads get the same three-source
+          reading and the same focus toggle the fixture matrix has. */}
+      {!hasEvidenceProfile && actualMode !== 'generate' && rows.length > 0 && (() => {
+        const isIssueRow = r => r.status === 'mismatch' || r.status === 'warning' || r.status === 'skip'
+        const issueRows = rows.filter(isIssueRow)
+        const visibleRows = showOnlyIssues ? issueRows : rows
+        return <div id="verification-findings" className="card verify-findings">
+        <div className="verify-findings-head">
+          <div>
+            <div className="card-title" style={{ marginBottom: 2 }}>What Anchor compared</div>
+            <p className="verify-findings-sub">{rows.length} attributes read from your anchors, catalog images and declared values. Click a row for the reasoning.</p>
           </div>
-          <div style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>Click a row to see details</div>
+          <button type="button" className={`anchor-focus-toggle ${showOnlyIssues ? 'is-active' : ''}`} aria-pressed={showOnlyIssues} onClick={() => setShowOnlyIssues(value => !value)}>
+            <span className="anchor-focus-toggle-knob" aria-hidden="true" />
+            <span><strong>Focus on issues</strong><small>{showOnlyIssues ? `Showing ${issueRows.length} issue${issueRows.length === 1 ? '' : 's'}` : 'Showing everything'}</small></span>
+          </button>
         </div>
+        {showOnlyIssues && issueRows.length === 0 ? (
+          <div className="anchor-evidence-all-clear"><CheckCircle size={28} /><div><strong>No issues found</strong><p>Every compared attribute is consistent. Switch off Focus on issues to see the full comparison.</p></div><button type="button" className="btn btn-outline btn-sm" onClick={() => setShowOnlyIssues(false)}>View everything</button></div>
+        ) : (
         <table className="tbl">
           <thead>
             <tr>
@@ -1124,7 +1786,7 @@ export default function Verify() {
             </tr>
           </thead>
           <tbody>
-            {rows.map((r, i) => (
+            {visibleRows.map((r, i) => (
               <React.Fragment key={r.key || i}>
                 <tr
                   className={r.status === 'mismatch' ? (r.severity === 'HIGH' ? 'row-fail' : 'row-warn') : r.status === 'warning' ? 'row-warn' : ''}
@@ -1158,8 +1820,8 @@ export default function Verify() {
                 </tr>
                 {expandedRow === i && r.note && (
                   <tr style={{ background: r.status === 'mismatch' && r.severity === 'HIGH' ? 'var(--danger-bg)' : r.status === 'warning' || r.status === 'mismatch' ? 'var(--warning-bg)' : 'var(--bg-page)' }}>
-                    <td colSpan={5} style={{ fontSize: 12, color: 'var(--text-secondary)', padding: '8px 14px 12px', borderBottom: '1px solid var(--border)' }}>
-                      <Eye size={12} style={{ verticalAlign: -2, marginRight: 4 }} />
+                    <td colSpan={5} className="verify-findings-note">
+                      <Eye size={13} style={{ verticalAlign: -2, marginRight: 5 }} />
                       {r.note}
                     </td>
                   </tr>
@@ -1168,7 +1830,8 @@ export default function Verify() {
             ))}
           </tbody>
         </table>
-      </div>
+        )}
+      </div>})()}
 
       {/* Fabric closeup needed banner */}
       {rows.some(r => r.key === 'fabric_appearance' && (r.status === 'skip' || r.anchor_confidence === 'LOW')) && (
@@ -1206,66 +1869,198 @@ export default function Verify() {
         </div>
       )}
 
-      {/* Fabric verification */}
-      {fabricResult && (
-        <div className="card">
-          <div className="card-title" style={{ fontSize: 14 }}>Visual Similarity (CLIP)</div>
-
-          {fabricResult.similarity_score !== undefined && (
-            <div style={{ fontSize: 12, marginBottom: 8, padding: '4px 8px', background: 'var(--bg-highlight)', borderRadius: 4, display: 'inline-block', border: '1px solid var(--border)' }}>
-              <strong>CLIP Cosine Similarity:</strong> {(fabricResult.similarity_score * 100).toFixed(1)}%
-              {fabricResult.source && <span style={{ marginLeft: 6, color: 'var(--text-tertiary)' }}>({fabricResult.source})</span>}
-            </div>
-          )}
-
-          {fabricResult.fabric_matches_anchor === true || fabricResult.fabric_matches_anchor === undefined ? (
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: 'var(--success)' }}>
-              <CheckCircle size={14} />
-              {fabricResult.issue ? fabricResult.issue : 'Fabric appearance is consistent between anchor and catalog'}
-            </div>
-          ) : (
-            <div>
-              <div style={{ color: 'var(--danger)', fontSize: 13, lineHeight: 1.6 }}>
-                <XCircle size={14} style={{ verticalAlign: -2, marginRight: 4 }} />
-                {fabricResult.issue || 'Fabric appearance differs between anchor and catalog'}
-              </div>
-              {fabricResult.needs_fabric_image && (
-                <div style={{ marginTop: 8, padding: '8px 12px', background: 'var(--bg-highlight)', borderRadius: 6, border: '1px solid var(--warning)', fontSize: 12, color: 'var(--warning)' }}>
-                  <AlertTriangle size={14} style={{ verticalAlign: -2, marginRight: 4 }} />
-                  <strong>Mandatory:</strong> Please upload a clear fabric closeup image to verify fabric consistency.
+      {/* Raw signal detail — one quiet drawer instead of a stack of jargon
+          cards. The verdict and fix list above already say what matters; this
+          exists for the reviewer who wants to see the instruments. */}
+      {(fabricResult || phashResult || (channelReport && channelReport.length > 0)) && actualMode !== 'generate' && (
+        <details className="card verify-tech">
+          <summary>
+            <ShieldCheck size={17} />
+            <span><strong>Measurement detail</strong><small>The raw signals behind the score — for reviewers, not required reading</small></span>
+          </summary>
+          <div className="verify-tech-body">
+            {channelReport && channelReport.length > 0 && (
+              <div className="verify-tech-row">
+                <span className="verify-tech-label">Channels</span>
+                <div className="verify-tech-chips">
+                  {channelReport.map(c => (
+                    <span key={c.channel} className={`verify-tech-chip is-${c.status}`}>
+                      {c.channel.replace(/_/g, ' ')}
+                      {c.status === 'measured' ? ` · LR ${Number(c.lr).toFixed(2)}` : ` · ${c.status.replace(/_/g, ' ')}`}
+                    </span>
+                  ))}
                 </div>
-              )}
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* pHash Perceptual Hashing */}
-      {phashResult && (
-        <div className="card">
-          <div className="card-title" style={{ fontSize: 14 }}>Perceptual Hash (pHash)</div>
-          <div style={{ display: 'flex', gap: 20, alignItems: 'center', marginBottom: 8 }}>
-            <div style={{ fontSize: 12, padding: '4px 8px', background: 'var(--bg-highlight)', borderRadius: 4, border: '1px solid var(--border)' }}>
-              <strong>Hamming Distance:</strong> {phashResult.phash_distance}
-            </div>
-            {phashResult.similarity_score != null && (
-              <div style={{ fontSize: 12, padding: '4px 8px', background: 'var(--bg-highlight)', borderRadius: 4, border: '1px solid var(--border)' }}>
-                <strong>Similarity:</strong> {(phashResult.similarity_score * 100).toFixed(1)}%
+              </div>
+            )}
+            {fabricResult && (
+              <div className="verify-tech-row">
+                <span className="verify-tech-label">Fabric (CLIP)</span>
+                <p className={fabricResult.fabric_matches_anchor === false ? 'is-bad' : 'is-good'}>
+                  {fabricResult.similarity_score !== undefined && <b>{(fabricResult.similarity_score * 100).toFixed(1)}% similarity · </b>}
+                  {fabricResult.fabric_matches_anchor === false
+                    ? (fabricResult.issue || 'Fabric appearance differs between anchor and catalog.')
+                    : 'Fabric appearance is consistent between anchor and catalog.'}
+                </p>
+              </div>
+            )}
+            {phashResult && (
+              <div className="verify-tech-row">
+                <span className="verify-tech-label">Structure (pHash)</span>
+                <p>
+                  <b>Distance {phashResult.phash_distance} · </b>
+                  {phashResult.is_match
+                    ? 'Images are near-identical at the pixel level.'
+                    : 'Images differ at the pixel level — normal for different photo angles.'}
+                </p>
               </div>
             )}
           </div>
-          {phashResult.is_match ? (
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: 'var(--success)' }}>
-              <CheckCircle size={14} />
-              Images are perceptually identical or near-identical (distance ≤ 10)
+        </details>
+      )}
+
+      {/* ─── EVIDENCE MATRIX (moved to bottom for clarity) ─── */}
+      {profileId && evidenceClaims.length > 0 && (
+        <section className="anchor-evidence-workspace" style={{ marginTop: 24 }}>
+          <div className="anchor-evidence-card anchor-evidence-matrix-card">
+            <div className="anchor-evidence-matrix-head">
+              <div>
+                <div className="anchor-evidence-card-title"><Package size={20} /> Evidence record</div>
+                <p className="anchor-evidence-copy">Full three-lens comparison. Rows with issues are highlighted — everything else passed.</p>
+              </div>
+              <div className="anchor-evidence-head-actions">
+                <button type="button" className={`anchor-focus-toggle ${showOnlyIssues ? 'is-active' : ''}`} aria-pressed={showOnlyIssues} onClick={() => setShowOnlyIssues(value => !value)}>
+                  <span className="anchor-focus-toggle-knob" aria-hidden="true" />
+                  <span><strong>Focus on issues</strong><small>{showOnlyIssues ? 'Showing fixes only' : 'Showing full record'}</small></span>
+                </button>
+                <span className="anchor-evidence-click-hint">Click a row for details</span>
+              </div>
             </div>
-          ) : (
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: 'var(--warning)' }}>
-              <AlertTriangle size={14} />
-              Images differ significantly at the pixel level (distance {phashResult.phash_distance}). This is normal for different photo angles.
+            <div className="anchor-evidence-source-key">
+              <span><i className="seller" /> Listing value</span>
+              <span><i className="catalog" /> Catalog reading</span>
+              <span><i className="anchor" /> Physical anchor</span>
+            </div>
+            {(() => {
+              const matrixEvidenceClaims = evidenceClaims.filter(claim =>
+                claim.key !== 'catalog_visual_match' && !(profileId === 'kurti' && claim.key === 'model_build')
+              )
+              const issueClaims = matrixEvidenceClaims.filter(claim => ['mismatch', 'needs_review', 'evidence_required'].includes(claim.verdict))
+              if (showOnlyIssues && !issueClaims.length) {
+                return <div className="anchor-evidence-all-clear"><CheckCircle size={28} /><div><strong>No action needed</strong><p>Every supported comparison passed. Switch off Focus on issues whenever you want the complete evidence record.</p></div><button type="button" className="btn btn-outline btn-sm" onClick={() => setShowOnlyIssues(false)}>View full record</button></div>
+              }
+              return <div className="anchor-evidence-table-wrap">
+            <table className="anchor-evidence-table">
+              <thead>
+                <tr>
+                  <th>Attribute</th>
+                  <th>Listing value</th>
+                  <th>Catalog-image evidence</th>
+                  <th>Anchor-image evidence</th>
+                  <th>Decision</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(() => {
+                  const matrixClaims = matrixEvidenceClaims.filter(claim => !showOnlyIssues || ['mismatch', 'needs_review', 'evidence_required'].includes(claim.verdict))
+                  return matrixClaims.map((claim, index) => {
+                  const matrixKey = `matrix-${claim.key}-${index}`
+                  const catalogEvidence = catalogEvidenceForClaim(claim, catalogPreviews, catalogEvidenceDiagnostics)
+                  const anchorEvidence = anchorEvidenceForClaim(claim)
+                  const anchorEvidenceStatus = typeof claim.anchorEvidence === 'object'
+                    ? claim.anchorEvidence?.status
+                    : ''
+                  const sources = sourceLabelsForClaim(claim)
+                  const sellerValue = typeof claim.sellerDeclared === 'object'
+                    ? claim.sellerDeclared?.value
+                    : (claim.sellerDeclared || claim.sellerValue || 'Not declared')
+                  const isIssue = ['mismatch', 'needs_review', 'evidence_required'].includes(claim.verdict)
+                  const isModelDisclosure = ['model_size', 'model_height'].includes(claim.key)
+                  return (
+                    <React.Fragment key={matrixKey}>
+                      <tr className={`anchor-evidence-row is-${claim.verdict}${isIssue ? ' is-highlighted-issue' : ''}`} onClick={() => setExpandedRow(expandedRow === matrixKey ? null : matrixKey)}>
+                        <td><strong>{claim.label}</strong><small>{claim.severity === 'HIGH' ? 'Publishing blocker' : 'Review'}</small></td>
+                        <td><span className="anchor-evidence-value seller">{sellerValue}</span></td>
+                        <td><span className={`anchor-evidence-value catalog is-${catalogEvidence.status}`}>{catalogEvidence.status === 'provided' ? 'Catalog views attached' : catalogEvidence.value}</span></td>
+                        <td>
+                          <span className={'anchor-evidence-value anchor' + (anchorEvidenceStatus ? ' is-' + anchorEvidenceStatus : '')}>{anchorEvidence || 'No anchor observation'}</span>
+                          {expandedRow === matrixKey && !isModelDisclosure && sources.length > 0 && <div className="anchor-evidence-source-chips">{sources.map(source => <span key={source}>{source}</span>)}</div>}
+                        </td>
+                        <td><span className={`anchor-evidence-verdict is-${claim.verdict}`}>{String(claim.verdict || 'unverified').replace(/_/g, ' ')}</span></td>
+                      </tr>
+                      {expandedRow === matrixKey && (
+                        <tr className="anchor-evidence-rationale-row">
+                          <td colSpan={5}>
+                            <div className="anchor-evidence-rationale"><AlertTriangle size={16} /><div><strong>Why Anchor made this decision</strong><p>{claim.verdictExplanation || claim.explanation || 'No detailed explanation was returned.'}</p>{claim.explanation && claim.verdictExplanation && <p>{claim.explanation}</p>}</div></div>
+                          </td>
+                        </tr>
+                      )}
+                    </React.Fragment>
+                  )
+                  })
+                })()}
+              </tbody>
+            </table>
+          </div>
+            })()}
+          </div>
+
+          {actualMode !== 'generate' && (evidenceTags || aestheticSuggestions.length > 0) && (
+            <div className="anchor-evidence-card anchor-tag-card">
+              <div className="anchor-evidence-matrix-head">
+                <div>
+                  <div className="anchor-evidence-card-title"><Tag size={20} /> Discovery tags with evidence boundaries</div>
+                  <p className="anchor-evidence-copy">Verified descriptors describe the product. Style tags are optional, searchable discovery cues.</p>
+                </div>
+              </div>
+
+              <div className="anchor-tag-tier anchor-tag-tier--verified">
+                <div className="anchor-tag-tier-heading"><span>1</span><div><strong>Verified descriptors</strong><small>Only shown when the anchor evidence supports the attribute.</small></div></div>
+                <div className="anchor-tag-list">
+                  {(evidenceTags?.verifiedDescriptors || []).map((tag, index) => (
+                    <span className="anchor-tag-chip is-verified" key={`${tag.tag}-${index}`}><CheckCircle size={13} /> {tag.tag}</span>
+                  ))}
+                  {!(evidenceTags?.verifiedDescriptors || []).length && <span className="anchor-tag-empty">No product descriptors are independently supported yet.</span>}
+                </div>
+              </div>
+
+              <div className="anchor-tag-tier anchor-tag-tier--aesthetic">
+                <div className="anchor-tag-tier-heading"><span>2</span><div><strong>Gen-Z style discovery</strong><small>Explainable vibe tags such as Indian casual, Desi-core, streetwear, or cottagecore.</small></div></div>
+                <div className="anchor-tag-suggestions">
+                  {aestheticSuggestions.length ? aestheticSuggestions.map((tag, index) => {
+                    const key = tagKey(tag)
+                    const accepted = Boolean(tagApprovals[key])
+                    const rejected = Boolean(tagRejections[key])
+                    const label = typeof tag === 'object' ? tag.tag : tag
+                    return (
+                      <article className={`anchor-style-suggestion${accepted ? ' is-accepted' : ''}${rejected ? ' is-rejected' : ''}`} key={`${key}-${index}`}>
+                        <div>
+                          <strong>{String(label).startsWith('#') ? label : `#${label}`}</strong>
+                          <p>{tag.explanation || 'Suggested from the verified visual attributes above.'}</p>
+                        </div>
+                        <div className="anchor-style-actions">
+                          {accepted ? <span className="anchor-tag-decision is-accepted"><CheckCircle size={13} /> Added to listing</span>
+                            : rejected ? <span className="anchor-tag-decision is-rejected">Not added</span>
+                            : <>
+                              <button type="button" className="btn btn-outline btn-sm" onClick={() => decideAestheticTag(tag, 'reject')}>Skip</button>
+                              <button type="button" className="btn btn-primary btn-sm" onClick={() => decideAestheticTag(tag, 'accept')}>Add tag</button>
+                            </>}
+                        </div>
+                      </article>
+                    )
+                  }) : <span className="anchor-tag-empty">No style tag is suggested until Anchor has enough verified attributes.</span>}
+                </div>
+              </div>
+
+              <div className="anchor-tag-tier anchor-tag-tier--seasonal">
+                <div className="anchor-tag-tier-heading"><span>3</span><div><strong>Seasonal recommendations</strong><small>Optional styling contexts, never presented as verified facts or live trend data.</small></div></div>
+                <div className="anchor-tag-list">
+                  {(evidenceTags?.seasonalSuggestions || []).map((tag, index) => <span className="anchor-tag-chip is-seasonal" key={`${tag.tag}-${index}`}>{tag.tag}</span>)}
+                  {!(evidenceTags?.seasonalSuggestions || []).length && <span className="anchor-tag-empty">No seasonal recommendation for the supported attributes.</span>}
+                </div>
+              </div>
             </div>
           )}
-        </div>
+        </section>
       )}
 
       {/* Action bar */}
@@ -1275,7 +2070,7 @@ export default function Verify() {
             <strong>{publishGate.blocked ? 'Not ready to publish' : 'Ready to publish'}</strong>
             <span>
               {publishGate.blocked
-                ? publishGate.message
+                ? `Resolve the ${failCount > 0 ? `${failCount} blocking issue${failCount === 1 ? '' : 's'}` : 'blocking issues'} in the fix list to unlock publishing.`
                 : v.status === 'PASS'
                   ? 'All critical checks passed.'
                   : `${warnCount} warning${warnCount === 1 ? '' : 's'} will remain attached to the evidence trail.`}
@@ -1286,7 +2081,7 @@ export default function Verify() {
               <button
                 className="btn btn-outline btn-sm"
                 onClick={() => {
-                  const targetId = corrections?.length ? 'ai-correction-copilot' : 'verification-findings'
+                  const targetId = correctionsToShow.length ? 'ai-correction-copilot' : 'verification-findings'
                   document.getElementById(targetId)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
                 }}
               >

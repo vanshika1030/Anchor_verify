@@ -51,6 +51,7 @@ export default function ProductView() {
     evidenceStatus === 'published' && !verificationReport.verdict
   )
   const isWarning = evidenceStatus === 'warning'
+  const isAiGenerated = Boolean(product.ai_model_images?.length) || product.verification_status === 'generated'
   const availableSizes = Object.keys(product.size_chart || {})
   const comparisonRows = verificationReport.comparison || []
   const verifiedChecks = comparisonRows.filter(row => row.status === 'match').length
@@ -108,6 +109,7 @@ export default function ProductView() {
           {images.length > 0 ? (
             images.slice(0, Math.max(2, images.length)).map((img, i) => (
               <div key={i} style={{ aspectRatio: '3/4', background: '#f5f5f6', position: 'relative', overflow: 'hidden' }}>
+                {isAiGenerated && <div className="ai-generated-badge">AI-generated catalog image</div>}
                 <img src={img} alt={`${product.title} view ${i + 1}`} style={{ width: '100%', height: '100%', objectFit: 'contain', transition: 'transform 0.3s ease', background: '#fff' }} onMouseEnter={(e) => e.currentTarget.style.transform = 'scale(1.03)'} onMouseLeave={(e) => e.currentTarget.style.transform = 'scale(1)'} />
               </div>
             ))
@@ -131,6 +133,12 @@ export default function ProductView() {
             <p style={{ fontSize: 16, color: '#282c3f', lineHeight: 1.5, margin: '0 0 16px 0' }}>
               {product.description}
             </p>
+          )}
+
+          {isAiGenerated && (
+            <div style={{ margin: '0 0 16px', padding: '10px 12px', borderRadius: 6, background: '#f6f2ff', border: '1px solid #ddd1ff', color: '#503a96', fontSize: 12, lineHeight: 1.45 }}>
+              <strong>AI-generated catalog image.</strong> This image was created with Anchor’s catalog tool. Product attributes and evidence status are shown separately below.
+            </div>
           )}
 
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 8px', border: '1px solid #eaeaec', borderRadius: 4, width: 'fit-content', marginBottom: 16, cursor: 'pointer' }}>

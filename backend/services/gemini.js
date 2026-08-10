@@ -7,8 +7,20 @@ import sharp from 'sharp'
 import crypto from 'crypto'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
+import { mlPost } from './ml_client.js'
 
 const execFileAsync = promisify(execFile)
+
+const IMAGE_MIME_TYPES = {
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.png': 'image/png',
+  '.webp': 'image/webp',
+}
+
+function mimeTypeForImage(filePath) {
+  return IMAGE_MIME_TYPES[path.extname(filePath || '').toLowerCase()] || 'image/jpeg'
+}
 
 const CACHE_DIR = path.join(process.cwd(), '.cache')
 if (!fs.existsSync(CACHE_DIR)) fs.mkdirSync(CACHE_DIR)
@@ -47,7 +59,7 @@ global.fetch = async (url, options) => {
 export function initGemini(keys) {
   if (Array.isArray(keys) && keys.length > 0) {
     apiKeys = keys
-    console.log(`[GEMINI] Initialized with ${apiKeys.length} API key(s), first key starts: ${apiKeys[0]?.substring(0,8)}...`)
+    console.log(`[GEMINI] Initialized with ${apiKeys.length} API key(s)`)
   }
 }
 
@@ -593,20 +605,15 @@ export function generateVerdict(comparison, modelIssues = []) {
  */
 export async function getGarmentBoundingBoxRatio(imagePath) {
   try {
-    const response = await fetch('http://localhost:8100/segment', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ image_path: imagePath })
-    })
-    const result = await response.json()
-    if (result.success) {
-      return { 
-        ratio: Number(result.ratio).toFixed(2), 
+    const result = await mlPost('/segment', { image_path: imagePath })
+    if (result?.success) {
+      return {
+        ratio: Number(result.ratio).toFixed(2),
         length_category: result.length_category,
         cutout_path: result.cutout_path
       }
     } else {
-      console.warn("Segmentation API returned error:", result.error)
+      console.warn("Segmentation API returned error:", result?.error || 'worker unavailable')
       return null
     }
   } catch (err) {
@@ -644,13 +651,8 @@ export async function generateCorrections(comparisonResult, modelIssues = [], an
     }))
 
     try {
-      const response = await fetch('http://localhost:8100/clip/binary-batch', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ image_path: anchorImagePath, pairs })
-      })
-      const result = await response.json()
-      if (result.success) {
+      const result = await mlPost('/clip/binary-batch', { image_path: anchorImagePath, pairs })
+      if (result?.success) {
         crossVerifyResults = result.results
       }
     } catch (err) {
@@ -731,16 +733,11 @@ export async function generateCorrections(comparisonResult, modelIssues = [], an
  */
 export async function runClipZeroShot(imagePath) {
   try {
-    const response = await fetch('http://localhost:8100/clip/zero-shot', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ image_path: imagePath })
-    })
-    const result = await response.json()
-    if (result.success) {
+    const result = await mlPost('/clip/zero-shot', { image_path: imagePath })
+    if (result?.success) {
       return result.attributes
     } else {
-      console.warn('[CLIP-ZS] API Zero-shot returned error:', result.error)
+      console.warn('[CLIP-ZS] API Zero-shot returned error:', result?.error || 'worker unavailable')
       return null
     }
   } catch (err) {
@@ -965,7 +962,9 @@ CRITICAL RULES:
   // generate placeholder attributes so the pipeline doesn't break.
   // This is better than returning {} which causes "Missing Input" everywhere.
   // ══════════════════════════════════════════════════════════════
-  if (Object.keys(attrs).length === 0) {
+  // Generic text guesses are intentionally disabled: failed visual analysis
+  // must remain unavailable evidence rather than a plausible-looking result.
+  if (false && Object.keys(attrs).length === 0) {
     console.warn('[EXTRACT] ALL extractors returned empty! Using Groq text-only fallback...')
     try {
       const { isGroqAvailable, groqGenerate } = await import('./groq.js')
@@ -992,7 +991,7 @@ CRITICAL RULES:
   }
 
   // ABSOLUTE last resort — if still empty, create minimal structure
-  if (Object.keys(attrs).length === 0) {
+  if (false && Object.keys(attrs).length === 0) {
     console.warn('[EXTRACT] Creating minimal stub attributes (all APIs + local models failed)')
     const STUB_KEYS = ['garment_type', 'primary_color', 'pattern_type', 'fabric_appearance',
       'overall_length', 'sleeve_length', 'neck_type', 'fit', 'occasion_style']
@@ -1096,10 +1095,12 @@ export function checkModelProportions(catalogAttrs, declaredHeight, declaredSize
   const issues = [];
   const h = catalogAttrs?.model_apparent_height;
   const b = catalogAttrs?.model_apparent_build;
-  
-  if (catalogAttrs?.garment_type?.value === 'Kurti' || catalogAttrs?.garment_type?.value === 'Dress') {
-    if (h) h.value = 'tall (5\'8+)';
-  }
+
+  // Removed: a hardcoded override that rewrote the detected height to
+  // "tall (5'8+)" whenever the garment type was Kurti or Dress. It mutated the
+  // caller's attribute object, so a value Anchor never measured was both
+  // compared against the seller's declaration and returned to the UI as
+  // "detected". Height either comes from the detector or the check is skipped.
 
   if (!h || !b || h.value === 'No model visible') return issues;
 
@@ -1265,6 +1266,17 @@ Return ONLY valid JSON with these exact keys:
 
 export async function generateCatalogImage(imagePaths, attributes, cvOverallLength, sizeChartPath = null, sizeChartMeasurements = null, declaredAttrs = {}) {
   if (!imagePaths || imagePaths.length === 0) return null
+
+  // The finalist build must never masquerade a composited fallback or a
+  // category-matched cached image as an AI try-on. Exact pre-rendered fixtures
+  // are resolved in the verification route before this function is reached.
+  // All other jobs are intentionally queued until a production render worker
+  // is configured and explicitly enabled.
+  if (process.env.ANCHOR_ENABLE_LIVE_GENERATION !== 'true') {
+    const error = new Error('CATALOG_GENERATION_PENDING: No verified catalog candidate exists for these exact inputs yet.')
+    error.code = 'CATALOG_GENERATION_PENDING'
+    throw error
+  }
   
   const anchorPath = imagePaths[0]
   const parsedPath = path.parse(anchorPath)
@@ -1603,13 +1615,8 @@ Model must have a perfectly consistent identity across all 5 panels. White studi
       sourceBuffer = fs.readFileSync(cvOverallLength.cutout_path)
     } else {
       try {
-        const response = await fetch('http://localhost:8100/segment', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ image_path: anchorPath })
-        })
-        const segResult = await response.json()
-        if (segResult.success && segResult.cutout_path) {
+        const segResult = await mlPost('/segment', { image_path: anchorPath })
+        if (segResult?.success && segResult.cutout_path) {
           sourceBuffer = fs.readFileSync(segResult.cutout_path)
         } else {
           sourceBuffer = fs.readFileSync(anchorPath)
@@ -1694,52 +1701,21 @@ Model must have a perfectly consistent identity across all 5 panels. White studi
 }
 
 export async function runClipSimilarity(anchorPath, catalogPath) {
-  try {
-    const response = await fetch('http://localhost:8100/clip/similarity', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ anchor_path: anchorPath, catalog_path: catalogPath })
-    })
-    const result = await response.json()
-    if (result.success) {
-      return result
-    } else {
-      console.warn("CLIP API returned error:", result.error)
-      return null
-    }
-  } catch (err) {
-    console.warn("Could not calculate CLIP similarity via API:", err.message)
-    return null
-  }
+  const result = await mlPost('/clip/similarity', { anchor_path: anchorPath, catalog_path: catalogPath })
+  if (result?.success) return result
+  if (result?.error) console.warn('CLIP API returned error:', result.error)
+  return null
 }
 
 export async function runVitInference(imagePath) {
-  try {
-    const response = await fetch('http://localhost:8100/vit/predict', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ image_path: imagePath })
-    })
-    return await response.json()
-  } catch (err) {
-    console.warn("ViT Inference API failed:", err.message)
-    return null
-  }
+  return await mlPost('/vit/predict', { image_path: imagePath })
 }
 
 export async function runPhashSimilarity(anchorPath, catalogPath) {
-  try {
-    const response = await fetch('http://localhost:8100/phash', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ anchor_path: anchorPath, catalog_path: catalogPath })
-    })
-    const result = await response.json()
-    return result.success ? result : null
-  } catch (err) {
-    console.warn("pHash API failed:", err.message)
-    return null
-  }
+  const result = await mlPost('/phash', { anchor_path: anchorPath, catalog_path: catalogPath })
+  if (result?.success) return result
+  if (result?.error) console.warn('pHash API returned error:', result.error)
+  return null
 }
 
 export async function enhanceMetadataWithVision(anchorImagePath, currentMetadata) {
@@ -1748,8 +1724,11 @@ export async function enhanceMetadataWithVision(anchorImagePath, currentMetadata
   // Fallback to Gemini File API
   try {
     const fileManager = new GoogleAIFileManager(getNextKey() || process.env.GEMINI_API_KEY)
+    // The anchor set contains .png as well as .jpg/.jpeg. Uploading a PNG
+    // labelled image/jpeg made Gemini reject or mis-decode the file, so the
+    // metadata step failed for exactly the assets it was meant to read.
     const fileResult = await fileManager.uploadFile(anchorImagePath, {
-      mimeType: 'image/jpeg',
+      mimeType: mimeTypeForImage(anchorImagePath),
       displayName: 'anchor'
     })
     

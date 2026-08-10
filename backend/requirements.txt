@@ -1,9 +1,18 @@
-rembg>=2.0.0
-Pillow>=10.0.0
+# ── Tier 1: math channels (always required, tiny) ────────────────────
+# Colour delta-E (CIEDE2000), FFT print geometry, pHash. The worker boots and
+# serves decision-grade evidence with just these.
 numpy>=1.24.0
-open-clip-torch>=3.0.0
-torch>=2.0.0
+Pillow>=10.0.0
+fastapi>=0.110.0
+uvicorn[standard]>=0.29.0
 imagehash>=4.3.0
+
+# ── Tier 2: deep channels (optional — worker degrades gracefully) ────
+# Identity embeddings (DINOv2 + FashionCLIP), custom ViT attributes,
+# segmentation. Install these, then run scripts/fetch_models.py once.
+torch>=2.0.0
+torchvision>=0.15.0
+open-clip-torch>=3.0.0
 timm>=1.0.0
 safetensors>=0.4.0
-torchvision>=0.15.0
+rembg>=2.0.0
