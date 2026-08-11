@@ -18,13 +18,13 @@ export default function Sidebar() {
 
   return (
     <aside className="sidebar">
-      <div className="sidebar-brand">
+      <div className="sidebar-brand" style={{ cursor: 'pointer' }} onClick={() => nav('/dashboard')}>
         <div className="brand-mark">
           <Anchor size={22} />
         </div>
         <div className="sidebar-brand-copy">
-          <h1>Anchor <span>Studio</span></h1>
-          <p>Seller workspace</p>
+          <h1>Anchor <span>Verify</span></h1>
+          <p>Listing verification</p>
         </div>
       </div>
 
@@ -57,15 +57,15 @@ export default function Sidebar() {
         >
           <ShieldCheck className="icon" size={16} />
           <span className="nav-label">Anchor Verification</span>
-          <span className="nav-badge">New</span>
+          <span className="nav-badge">7-Layer</span>
         </button>
       </nav>
 
       <div className="sidebar-insight">
         <Sparkles size={15} />
         <div>
-          <strong>Quality, made simple</strong>
-          <span>Proof-backed listings shoppers can trust.</span>
+          <strong>7 checks. Zero guesswork.</strong>
+          <span>Every listing verified against the real product.</span>
         </div>
       </div>
 

@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Camera, Cpu, ShieldCheck, Layers, Sparkles, ArrowRight, Zap, RefreshCw, Box, CheckCircle } from 'lucide-react';
+import { Camera, Cpu, ShieldCheck, Layers, Sparkles, ArrowRight, Zap, Scissors, Ruler, GitMerge, CheckCircle } from 'lucide-react';
 
 export default function AnchorIntro() {
   const navigate = useNavigate();
@@ -90,29 +90,29 @@ export default function AnchorIntro() {
           display: inline-flex;
           align-items: center;
           gap: 10px;
-          background: rgba(199, 101, 134, 0.15);
-          border: 1px solid rgba(199, 101, 134, 0.4);
+          background: rgba(199, 101, 134, 0.12);
+          border: 1px solid rgba(199, 101, 134, 0.3);
           color: #efb8ca;
-          padding: 10px 20px;
+          padding: 10px 22px;
           border-radius: 100px;
-          font-size: 14px;
+          font-size: 13px;
           font-weight: 700;
           letter-spacing: 1.5px;
           text-transform: uppercase;
           margin-bottom: 40px;
-          box-shadow: 0 0 25px rgba(199, 101, 134, 0.2);
+          box-shadow: 0 0 30px rgba(199, 101, 134, 0.15);
           backdrop-filter: blur(10px);
           animation: pulse-glow 3s infinite alternate;
         }
 
         @keyframes pulse-glow {
-          0% { box-shadow: 0 0 10px rgba(199, 101, 134, 0.2); }
-          100% { box-shadow: 0 0 40px rgba(199, 101, 134, 0.55); }
+          0% { box-shadow: 0 0 10px rgba(199, 101, 134, 0.15); }
+          100% { box-shadow: 0 0 40px rgba(199, 101, 134, 0.4); }
         }
 
         .hero-title {
           font-family: 'Fraunces', Georgia, serif;
-          font-size: 72px;
+          font-size: 68px;
           font-weight: 600;
           text-align: center;
           margin-bottom: 30px;
@@ -121,16 +121,16 @@ export default function AnchorIntro() {
           background: linear-gradient(135deg, #ffffff 20%, #efb8ca 60%, #c76586 100%);
           -webkit-background-clip: text;
           -webkit-text-fill-color: transparent;
-          filter: drop-shadow(0px 4px 20px rgba(255,63,108,0.2));
+          filter: drop-shadow(0px 4px 20px rgba(199,101,134,0.15));
         }
 
         .hero-subtitle {
-          font-size: 22px;
-          color: rgba(255,255,255,0.75);
+          font-size: 20px;
+          color: rgba(255,255,255,0.7);
           text-align: center;
-          max-width: 800px;
-          margin: 0 auto 64px;
-          line-height: 1.6;
+          max-width: 780px;
+          margin: 0 auto 60px;
+          line-height: 1.65;
           font-weight: 400;
         }
 
@@ -142,40 +142,39 @@ export default function AnchorIntro() {
         .features-grid {
           display: grid;
           grid-template-columns: repeat(3, 1fr);
-          gap: 32px;
+          gap: 24px;
           width: 100%;
-          margin-bottom: 80px;
+          margin-bottom: 72px;
         }
 
         .feature-card {
-          background: rgba(255, 255, 255, 0.02);
-          border: 1px solid rgba(255, 255, 255, 0.08);
-          backdrop-filter: blur(24px);
-          -webkit-backdrop-filter: blur(24px);
-          border-radius: 24px;
-          padding: 40px 30px;
+          background: rgba(255, 255, 255, 0.025);
+          border: 1px solid rgba(255, 255, 255, 0.07);
+          backdrop-filter: blur(20px);
+          -webkit-backdrop-filter: blur(20px);
+          border-radius: 22px;
+          padding: 36px 28px;
           transition: all 0.5s cubic-bezier(0.16, 1, 0.3, 1);
           display: flex;
           flex-direction: column;
           align-items: flex-start;
           position: relative;
           overflow: hidden;
-          box-shadow: inset 0 0 0 1px rgba(255,255,255,0.05);
         }
 
         .feature-card::before {
           content: '';
           position: absolute;
           top: 0; left: 0; width: 100%; height: 100%;
-          background: radial-gradient(circle at top left, rgba(199, 101, 134, 0.15), transparent 70%);
+          background: radial-gradient(circle at top left, rgba(199, 101, 134, 0.12), transparent 70%);
           opacity: 0;
           transition: opacity 0.5s ease;
         }
 
         .feature-card:hover {
-          transform: translateY(-12px) scale(1.02);
-          border-color: rgba(199, 101, 134, 0.4);
-          box-shadow: 0 30px 60px rgba(0, 0, 0, 0.5), inset 0 0 0 1px rgba(199, 101, 134, 0.3);
+          transform: translateY(-8px) scale(1.01);
+          border-color: rgba(199, 101, 134, 0.35);
+          box-shadow: 0 24px 48px rgba(0, 0, 0, 0.4), inset 0 0 0 1px rgba(199, 101, 134, 0.2);
         }
 
         .feature-card:hover::before {
@@ -183,69 +182,106 @@ export default function AnchorIntro() {
         }
 
         .feature-icon-wrapper {
-          width: 56px;
-          height: 56px;
-          border-radius: 16px;
-          background: linear-gradient(135deg, rgba(199, 101, 134, 0.25), rgba(209, 138, 104, 0.15));
-          border: 1px solid rgba(199, 101, 134, 0.3);
+          width: 52px;
+          height: 52px;
+          border-radius: 15px;
+          background: linear-gradient(135deg, rgba(199, 101, 134, 0.2), rgba(209, 138, 104, 0.12));
+          border: 1px solid rgba(199, 101, 134, 0.25);
           display: flex;
           align-items: center;
           justify-content: center;
-          margin-bottom: 24px;
+          margin-bottom: 22px;
           color: var(--intro-accent);
-          box-shadow: 0 8px 24px rgba(199, 101, 134, 0.2);
+          box-shadow: 0 6px 20px rgba(199, 101, 134, 0.15);
+          transition: all 0.4s ease;
+        }
+
+        .feature-card:hover .feature-icon-wrapper {
+          transform: scale(1.1) rotate(5deg);
+          box-shadow: 0 10px 30px rgba(199, 101, 134, 0.3);
         }
 
         .feature-title {
-          font-size: 22px;
+          font-size: 20px;
           font-weight: 800;
           color: white;
-          margin-bottom: 16px;
-          letter-spacing: -0.5px;
+          margin-bottom: 14px;
+          letter-spacing: -0.3px;
         }
 
         .feature-desc {
-          font-size: 16px;
-          color: rgba(255, 255, 255, 0.65);
-          line-height: 1.6;
+          font-size: 14px;
+          color: rgba(255, 255, 255, 0.55);
+          line-height: 1.65;
         }
 
         .pipeline-container {
           width: 100%;
-          background: rgba(0, 0, 0, 0.3);
-          border: 1px solid rgba(255, 255, 255, 0.08);
-          border-radius: 32px;
-          padding: 60px;
+          background: rgba(0, 0, 0, 0.25);
+          border: 1px solid rgba(255, 255, 255, 0.06);
+          border-radius: 28px;
+          padding: 52px 36px;
           position: relative;
-          margin-bottom: 80px;
+          margin-bottom: 72px;
           overflow: hidden;
           backdrop-filter: blur(20px);
         }
 
-        .pipeline-title {
+        .pipeline-container::before {
+          content: '';
+          position: absolute;
+          top: 0; left: 0; right: 0; height: 1px;
+          background: linear-gradient(90deg, transparent, rgba(199,101,134,0.3), transparent);
+        }
+
+        .pipeline-title-section {
           text-align: center;
-          font-size: 24px;
+          margin-bottom: 44px;
+        }
+
+        .pipeline-count-badge {
+          display: inline-flex;
+          align-items: center;
+          gap: 6px;
+          padding: 6px 14px;
+          border-radius: 999px;
+          background: rgba(199,101,134,0.12);
+          border: 1px solid rgba(199,101,134,0.2);
+          color: #efb8ca;
+          font-size: 11px;
+          font-weight: 700;
+          letter-spacing: 0.08em;
+          text-transform: uppercase;
+          margin-bottom: 14px;
+        }
+
+        .pipeline-title {
+          font-size: 22px;
           font-weight: 800;
-          margin-bottom: 48px;
           color: white;
-          letter-spacing: 1px;
+          letter-spacing: -0.3px;
+        }
+
+        .pipeline-subtitle {
+          color: rgba(255,255,255,0.4);
+          font-size: 13px;
+          margin-top: 8px;
         }
 
         .pipeline-track {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
+          display: grid;
+          grid-template-columns: repeat(7, 1fr);
+          gap: 8px;
           position: relative;
         }
 
         .pipeline-line {
           position: absolute;
-          top: 50%;
-          left: 50px;
-          right: 50px;
-          height: 3px;
-          background: rgba(255,255,255,0.08);
-          transform: translateY(-50%);
+          top: 36px;
+          left: 40px;
+          right: 40px;
+          height: 2px;
+          background: rgba(255,255,255,0.06);
           z-index: 1;
         }
 
@@ -253,8 +289,8 @@ export default function AnchorIntro() {
           height: 100%;
           background: linear-gradient(90deg, var(--intro-accent), var(--intro-plum), var(--intro-copper));
           width: 0%;
-          animation: load-bar 2.5s 0.8s cubic-bezier(0.16, 1, 0.3, 1) forwards;
-          box-shadow: 0 0 15px rgba(199, 101, 134, 0.55);
+          animation: load-bar 3s 0.8s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+          box-shadow: 0 0 12px rgba(199, 101, 134, 0.4);
         }
 
         @keyframes load-bar {
@@ -267,83 +303,145 @@ export default function AnchorIntro() {
           display: flex;
           flex-direction: column;
           align-items: center;
-          gap: 20px;
-          width: 140px;
+          gap: 14px;
         }
 
         .node-icon {
-          width: 80px;
-          height: 80px;
+          width: 72px;
+          height: 72px;
           background: #181218;
-          border: 2px solid rgba(255,255,255,0.15);
+          border: 2px solid rgba(255,255,255,0.1);
           border-radius: 50%;
           display: flex;
           align-items: center;
           justify-content: center;
-          transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1);
-          box-shadow: 0 0 0 6px rgba(24, 18, 24, 1);
+          transition: all 0.5s cubic-bezier(0.16, 1, 0.3, 1);
+          box-shadow: 0 0 0 5px rgba(24, 18, 24, 1);
         }
 
-        .pipeline-container:hover .node-icon {
+        .pipeline-node:hover .node-icon {
           border-color: var(--intro-accent);
-          box-shadow: 0 0 0 6px rgba(24, 18, 24, 1), 0 0 30px rgba(199, 101, 134, 0.45);
-          transform: scale(1.15) rotate(5deg);
+          box-shadow: 0 0 0 5px rgba(24, 18, 24, 1), 0 0 28px rgba(199, 101, 134, 0.45);
+          transform: scale(1.12);
+          background: rgba(199,101,134,0.08);
+        }
+
+        .node-num {
+          position: absolute;
+          top: -6px;
+          right: calc(50% - 44px);
+          width: 22px;
+          height: 22px;
+          border-radius: 50%;
+          background: linear-gradient(135deg, var(--intro-accent), var(--intro-copper));
+          color: white;
+          font-size: 10px;
+          font-weight: 800;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          box-shadow: 0 3px 10px rgba(199,101,134,0.4);
+          opacity: 0;
+          animation: fade-up 0.5s forwards;
         }
 
         .node-label {
-          font-size: 15px;
+          font-size: 12px;
           font-weight: 700;
-          color: rgba(255,255,255,0.9);
+          color: rgba(255,255,255,0.85);
           text-align: center;
           opacity: 0;
-          transform: translateY(15px);
+          transform: translateY(10px);
           animation: fade-up 0.6s forwards;
-          line-height: 1.4;
+          line-height: 1.35;
+          max-width: 110px;
         }
 
-        .node-icon svg { color: rgba(255,255,255,0.7); transition: color 0.4s; }
-        .pipeline-container:hover .node-icon svg { color: white; }
+        .node-sublabel {
+          font-size: 10px;
+          color: rgba(255,255,255,0.35);
+          text-align: center;
+          margin-top: -8px;
+          opacity: 0;
+          animation: fade-up 0.6s forwards;
+        }
+
+        .node-icon svg { color: rgba(255,255,255,0.6); transition: color 0.4s; }
+        .pipeline-node:hover .node-icon svg { color: var(--intro-accent); }
 
         @keyframes fade-up {
           100% { opacity: 1; transform: translateY(0); }
         }
 
+        .pipeline-footer {
+          display: flex;
+          justify-content: center;
+          gap: 20px;
+          margin-top: 36px;
+          flex-wrap: wrap;
+        }
+
+        .pipeline-stat {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          padding: 8px 14px;
+          border-radius: 999px;
+          background: rgba(255,255,255,0.04);
+          border: 1px solid rgba(255,255,255,0.06);
+          font-size: 11px;
+          font-weight: 600;
+          color: rgba(255,255,255,0.6);
+        }
+
+        .pipeline-stat svg { color: #4ade80; }
+
         .premium-btn {
           display: inline-flex;
           align-items: center;
-          gap: 16px;
-          padding: 24px 56px;
-          font-size: 20px;
+          gap: 14px;
+          padding: 22px 52px;
+          font-size: 18px;
           font-weight: 800;
           color: white;
           background: linear-gradient(135deg, var(--intro-accent), var(--intro-copper));
           border: none;
-          border-radius: 40px;
+          border-radius: 36px;
           cursor: pointer;
           transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1);
-          box-shadow: 0 15px 40px rgba(199, 101, 134, 0.34), inset 0 2px 0 rgba(255,255,255,0.3);
+          box-shadow: 0 14px 40px rgba(199, 101, 134, 0.3), inset 0 1px 0 rgba(255,255,255,0.25);
           text-decoration: none;
           position: relative;
           overflow: hidden;
-          letter-spacing: 0.5px;
+          letter-spacing: 0.3px;
         }
 
-        .premium-btn::after {
+        .premium-btn::before {
           content: '';
           position: absolute;
-          top: -50%; left: -50%; width: 200%; height: 200%;
-          background: radial-gradient(circle, rgba(255,255,255,0.4) 0%, transparent 70%);
-          opacity: 0;
-          transition: opacity 0.4s;
+          top: 0; left: -100%; width: 100%; height: 100%;
+          background: linear-gradient(90deg, transparent, rgba(255,255,255,0.2), transparent);
+          transition: left 0.6s ease;
         }
 
         .premium-btn:hover {
-          transform: translateY(-4px) scale(1.03);
-          box-shadow: 0 25px 50px rgba(199, 101, 134, 0.52), inset 0 2px 0 rgba(255,255,255,0.4);
+          transform: translateY(-3px) scale(1.02);
+          box-shadow: 0 22px 50px rgba(199, 101, 134, 0.45), inset 0 1px 0 rgba(255,255,255,0.3);
         }
 
-        .premium-btn:hover::after {
-          opacity: 1;
+        .premium-btn:hover::before {
+          left: 100%;
+        }
+
+        @media (max-width: 900px) {
+          .features-grid { grid-template-columns: 1fr; }
+          .pipeline-track { grid-template-columns: repeat(4, 1fr); gap: 16px; }
+          .hero-title { font-size: 44px; }
+        }
+        @media (max-width: 600px) {
+          .pipeline-track { grid-template-columns: repeat(3, 1fr); gap: 16px; }
+          .hero-title { font-size: 36px; }
+          .anchor-intro-container { padding: 48px 16px; }
         }
       `}</style>
 
@@ -356,7 +454,7 @@ export default function AnchorIntro() {
 
       <div className="glass-hero">
         <div className="badge-pill">
-          <ShieldCheck size={18} /> Consumer Trust Infrastructure
+          <ShieldCheck size={16} /> 7-Layer Verification Engine
         </div>
 
         <h1 className="hero-title">What shoppers see<br/>should match what arrives.</h1>
@@ -368,7 +466,7 @@ export default function AnchorIntro() {
         <div className="features-grid">
           <div className="feature-card" style={{ transitionDelay: '0.1s' }}>
             <div className="feature-icon-wrapper">
-              <Zap size={28} />
+              <Zap size={24} />
             </div>
             <div className="feature-title">Three-source verification</div>
             <div className="feature-desc">Seller metadata, real-product anchor images, and catalog imagery are checked together for colour, print, construction, length, and fit consistency.</div>
@@ -376,7 +474,7 @@ export default function AnchorIntro() {
           
           <div className="feature-card" style={{ transitionDelay: '0.2s' }}>
             <div className="feature-icon-wrapper">
-              <ShieldCheck size={28} />
+              <ShieldCheck size={24} />
             </div>
             <div className="feature-title">Trust that survives delivery</div>
             <div className="feature-desc">Catch missing back prints, misleading garment length, body-build mismatch, and size-chart contradictions before they become shopper disappointment.</div>
@@ -384,7 +482,7 @@ export default function AnchorIntro() {
           
           <div className="feature-card" style={{ transitionDelay: '0.3s' }}>
             <div className="feature-icon-wrapper">
-              <Sparkles size={28} />
+              <Sparkles size={24} />
             </div>
             <div className="feature-title">Consistency Copilot</div>
             <div className="feature-desc">Evidence-backed suggestions help sellers repair inconsistent claims while preserving the original submitted data and a clear verification trail.</div>
@@ -392,31 +490,45 @@ export default function AnchorIntro() {
         </div>
 
         <div className="pipeline-container">
-          <div className="pipeline-title">The 5-Layer AI Verification Pipeline</div>
+          <div className="pipeline-title-section">
+            <div className="pipeline-count-badge"><Layers size={13} /> Seven independent checks</div>
+            <div className="pipeline-title">The 7-Layer AI Verification Pipeline</div>
+            <div className="pipeline-subtitle">Layers 1–6 run fully offline — zero external API calls</div>
+          </div>
           <div className="pipeline-track">
             <div className="pipeline-line">
               <div className="pipeline-line-fill" />
             </div>
 
             {[
-              { icon: Camera, label: 'Visual Gate' },
-              { icon: Cpu, label: 'ViT Extract' },
-              { icon: ShieldCheck, label: 'pHash Check' },
-              { icon: Layers, label: 'Math Fusion' },
-              { icon: Sparkles, label: 'Trust Proof' }
+              { icon: Camera, label: 'Visual Gate', sub: 'CLIP + pHash', num: 1 },
+              { icon: Cpu, label: 'ViT Extract', sub: '19 attributes', num: 2 },
+              { icon: Scissors, label: 'Segmentation', sub: 'Garment isolation', num: 3 },
+              { icon: Layers, label: 'Fabric Check', sub: 'Texture verify', num: 4 },
+              { icon: Ruler, label: 'Size Validation', sub: 'Chart cross-ref', num: 5 },
+              { icon: GitMerge, label: 'Bayesian Fusion', sub: '3-source merge', num: 6 },
+              { icon: ShieldCheck, label: 'Trust Verdict', sub: 'Final decision', num: 7 },
             ].map((node, i) => (
               <div className="pipeline-node" key={i}>
-                <div className="node-icon" style={{ transitionDelay: `${i * 0.15}s` }}>
-                  <node.icon size={32} />
+                <div className="node-num" style={{ animationDelay: `${0.8 + (i * 0.2)}s` }}>{node.num}</div>
+                <div className="node-icon" style={{ transitionDelay: `${i * 0.1}s` }}>
+                  <node.icon size={28} />
                 </div>
-                <div className="node-label" style={{ animationDelay: `${0.8 + (i * 0.25)}s` }}>{node.label}</div>
+                <div className="node-label" style={{ animationDelay: `${0.8 + (i * 0.2)}s` }}>{node.label}</div>
+                <div className="node-sublabel" style={{ animationDelay: `${1.0 + (i * 0.2)}s` }}>{node.sub}</div>
               </div>
             ))}
+          </div>
+
+          <div className="pipeline-footer">
+            <div className="pipeline-stat"><CheckCircle size={14} /> Layers 1–6 run locally</div>
+            <div className="pipeline-stat"><CheckCircle size={14} /> Zero API calls for verification</div>
+            <div className="pipeline-stat"><CheckCircle size={14} /> Custom ViT 89% accuracy</div>
           </div>
         </div>
 
         <button className="premium-btn" onClick={() => navigate('/new-listing')}>
-          Verify a New Listing <ArrowRight size={24} />
+          Verify a New Listing <ArrowRight size={22} />
         </button>
       </div>
     </div>

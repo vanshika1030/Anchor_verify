@@ -57,11 +57,11 @@ function Breadcrumb() {
     '/anchor-intro': { title: 'Anchor intelligence', subtitle: 'How product trust is built' },
     '/publish': { title: 'Published', subtitle: 'Listing sent for quality review' },
   }
-  const page = map[loc.pathname] || { title: 'Anchor Studio', subtitle: 'Seller workspace' }
+  const page = map[loc.pathname] || { title: 'Anchor Verify', subtitle: 'Listing verification' }
 
   return (
     <div className="breadcrumb">
-      <span className="breadcrumb-overline">Seller studio</span>
+      <span className="breadcrumb-overline">Anchor Verify</span>
       <span className="breadcrumb-copy">
         <b>{page.title}</b>
         <span>{page.subtitle}</span>
@@ -80,7 +80,7 @@ function Layout() {
     if (content) content.scrollTop = 0
     document.title = isCitizenRoute
       ? 'Anchor — Myntra Partner Portal'
-      : 'Anchor Studio — Myntra Seller Workspace'
+      : 'Anchor Verify — Myntra Listing Verification'
   }, [isCitizenRoute, loc.pathname])
 
   if (!isAuthenticated && loc.pathname === '/login') {

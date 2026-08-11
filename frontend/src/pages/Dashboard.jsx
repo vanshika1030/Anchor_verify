@@ -90,13 +90,13 @@ export default function Dashboard() {
     <main className="dashboard-page page-shell">
       <section className="dashboard-hero">
         <div className="hero-copy">
-          <div className="hero-eyebrow"><ShieldCheck size={13} /> Anchor Studio · Catalog assurance</div>
+          <div className="hero-eyebrow"><ShieldCheck size={13} /> Anchor · 7-Layer AI Verification</div>
           <h1>
             Verify every product claim <em>before shoppers see it.</em>
           </h1>
           <p>
-            Welcome back, {seller?.business_name || 'Seller'}. Anchor Studio compares seller metadata, physical-product
-            evidence, catalog images, model fit, and sizing so the listing matches what customers receive.
+            Welcome back, {seller?.business_name || 'Seller'}. Anchor runs 7 independent AI checks—comparing
+            seller metadata, anchor images, catalog views, model fit, and sizing—so the listing matches what customers receive.
           </p>
           <div className="hero-actions">
             <button className="btn btn-primary" onClick={() => navigate('/new-listing')}>
@@ -108,8 +108,8 @@ export default function Dashboard() {
           </div>
           <div className="hero-trust">
             <span><CheckCircle2 size={14} /> Three-source consistency</span>
-            <span><Images size={14} /> Print & length checks</span>
-            <span><Zap size={14} /> Fit evidence for shoppers</span>
+            <span><Images size={14} /> 7-layer AI pipeline</span>
+            <span><Zap size={14} /> Bayesian fusion scoring</span>
           </div>
         </div>
 
@@ -120,10 +120,10 @@ export default function Dashboard() {
               <span>ANCHOR TRUST PREVIEW</span>
               <span className="preview-live">● EVIDENCE READY</span>
             </div>
-            <img src={FASHION_EDITORIAL} alt="Contemporary women’s fashion editorial" />
+            <img src={FASHION_EDITORIAL} alt="Contemporary women's fashion editorial" />
             <div className="preview-caption">
               <div><strong>Fashion catalog proof</strong><small>Metadata · imagery · fit</small></div>
-              <span className="preview-score">3-way</span>
+              <span className="preview-score">7-layer</span>
             </div>
           </div>
           <div className="floating-tag two">Claims ↔ Product ↔ Catalog</div>
@@ -149,28 +149,28 @@ export default function Dashboard() {
           </div>
 
           <div className="kpi-grid">
-            <div className="kpi-card">
+            <div className="kpi-card" style={{ animationDelay: '0.05s' }}>
                <div className="kpi-icon"><BarChart3 size={24}/></div>
                <div className="kpi-info">
                  <div className="kpi-value">{total}</div>
                  <div className="kpi-label">Total Listings</div>
                </div>
             </div>
-            <div className="kpi-card">
+            <div className="kpi-card" style={{ animationDelay: '0.1s' }}>
                <div className="kpi-icon"><ShieldCheck size={24}/></div>
                <div className="kpi-info">
                  <div className="kpi-value">{evidenceBackedRate}%</div>
                  <div className="kpi-label">Evidence-Backed Rate</div>
                </div>
             </div>
-            <div className="kpi-card">
+            <div className="kpi-card" style={{ animationDelay: '0.15s' }}>
                <div className="kpi-icon"><AlertTriangle size={24}/></div>
                <div className="kpi-info">
                  <div className="kpi-value">{needsCorrectionCount}</div>
                  <div className="kpi-label">Needs Correction</div>
                </div>
             </div>
-            <div className="kpi-card">
+            <div className="kpi-card" style={{ animationDelay: '0.2s' }}>
                <div className="kpi-icon"><Clock size={24}/></div>
                <div className="kpi-info">
                  <div className="kpi-value">{pendingCount}</div>
