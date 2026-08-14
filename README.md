@@ -202,14 +202,7 @@ npm run dev                 # → http://localhost:5173
 > Layers 1, 3–6 need **zero API keys**. Verification runs without any external services. Adding a Gemini key enables Layer 2 cloud cross-checks and Layer 7 generation.
 
 ---
-**Research links:**
-> https://clutch.co/resources/ai-in-branding
 
-
-> https://stylitics.com/resources/blog/why-ai-generated-imagery-reduces-returns/
-
-
-Rest of the research, in one place : https://canva.link/abbkvorcizf998y
 
 <p align="center">
   <br/>
@@ -219,5 +212,14 @@ Rest of the research, in one place : https://canva.link/abbkvorcizf998y
 ---
 
 ## Research & References
+
+
+> https://clutch.co/resources/ai-in-branding
+
+
+> https://stylitics.com/resources/blog/why-ai-generated-imagery-reduces-returns/
+
+
+Rest of the research, in one place : https://canva.link/abbkvorcizf998y
 
 <!-- Add links to papers, datasets, and prior art here -->
