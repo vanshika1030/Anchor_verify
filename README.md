@@ -212,7 +212,7 @@ npm run dev                 # → http://localhost:5173
 Rest of the research, in one place : https://canva.link/abbkvorcizf998y
 
 <p align="center">
-  <strong>Built for Myntra HackerRamp</strong><br/>
+  <br/>
   <em>⚓ Trust shouldn't be optional.</em>
 </p>
 
