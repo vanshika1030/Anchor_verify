@@ -204,8 +204,12 @@ npm run dev                 # → http://localhost:5173
 ---
 **Research links:**
 > https://clutch.co/resources/ai-in-branding
+
+
 > https://stylitics.com/resources/blog/why-ai-generated-imagery-reduces-returns/
-> Rest of the research, in one place : https://canva.link/abbkvorcizf998y
+
+
+Rest of the research, in one place : https://canva.link/abbkvorcizf998y
 
 <p align="center">
   <strong>Built for Myntra HackerRamp</strong><br/>
