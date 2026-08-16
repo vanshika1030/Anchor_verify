@@ -227,6 +227,54 @@ export async function runIdentityChannel(anchorPath, catalogPath) {
 }
 
 /**
+ * Layer 0 — SegFormer-B2 isolates the garment before MediaPipe Pose relates
+ * its hem to the model's body landmarks.  This intentionally has no likelihood
+ * ratio and creates no model issue: a single fashion image can be cropped,
+ * posed or occluded, so it is useful seller-facing review evidence but is not
+ * calibrated enough to block a listing by itself.
+ */
+export async function runSilhouetteChannel(anchorPath, catalogPath) {
+  const reading = await mlPost('/channel/silhouette', {
+    anchor_path: anchorPath,
+    catalog_path: catalogPath,
+  })
+  if (!reading?.success) {
+    return {
+      channel: 'silhouette_pose',
+      status: 'unavailable',
+      lr: null,
+      error: reading?.error || 'SegFormer-B2 or MediaPipe Pose unavailable',
+    }
+  }
+
+  const mismatch = !reading.length_match
+  const anchorLength = reading.anchor.length_category.replaceAll('_', ' ')
+  const catalogLength = reading.catalog.length_category.replaceAll('_', ' ')
+  return {
+    channel: 'silhouette_pose',
+    status: 'measured',
+    lr: null,
+    reading,
+    row: {
+      key: 'silhouette_pose',
+      label: 'Silhouette / hem position',
+      anchor_value: anchorLength,
+      catalog_value: catalogLength,
+      declared_value: 'Comparable image-relative garment length',
+      // A warning keeps this visible to the seller while preserving the current
+      // verdict behaviour until a calibrated threshold exists.
+      status: mismatch ? 'warning' : 'match',
+      severity: mismatch ? 'MEDIUM' : 'LOW',
+      note: mismatch
+        ? `The garment hem falls at different body landmarks in the anchor (${anchorLength}) and catalog (${catalogLength}). Review the catalog framing and garment length; this is advisory evidence, not a publication blocker.`
+        : `Both garments place the hem at the ${anchorLength.replace(/\b\w/g, char => char.toUpperCase())} landmark band. Measured from a SegFormer-B2 garment mask and MediaPipe Pose landmarks.`,
+      source: 'Layer-0: SegFormer-B2 + MediaPipe Pose',
+      verdict_impact: 'review_only_until_calibrated',
+    },
+  }
+}
+
+/**
  * Run every channel the worker offers for this submission. Channels run
  * concurrently; each degrades independently. `channels` preserves per-channel
  * detail for the UI; `rows`/`issues`/`ratios` feed the existing pipeline.
@@ -240,6 +288,7 @@ export async function runVerificationNetwork({ anchorPaths = [], catalogPaths = 
     tasks.push(runColorChannel(anchorPaths, catalogPaths, garmentHint))
     tasks.push(runTextureChannel(anchorFront, catalogFront))
     tasks.push(runIdentityChannel(anchorFront, catalogFront))
+    tasks.push(runSilhouetteChannel(anchorFront, catalogFront))
   }
 
   const settled = await Promise.all(tasks)
