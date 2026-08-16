@@ -36,12 +36,6 @@ except ImportError:
     IMAGEHASH_OK = False
 
 try:
-    from rembg import remove
-    REMBG_OK = True
-except ImportError:
-    REMBG_OK = False
-
-try:
     import timm
     from torchvision import transforms
     from safetensors.torch import load_file
@@ -50,6 +44,7 @@ except ImportError:
     TIMM_OK = False
 
 from verification_math import compare_color_sets, compare_colors, compare_texture
+from garment_analysis import GarmentVisionStack
 
 # Global models
 clip_model = None
@@ -64,6 +59,11 @@ vit_device = None
 
 dino_model = None
 dino_transform = None
+
+# Layer 0 is a self-contained optional stack.  It does not participate in the
+# exact-hash fixture path in the Node service, and advertises its capability
+# state rather than making this worker fail to start when weights are absent.
+garment_vision = GarmentVisionStack()
 
 # ZERO_SHOT_ATTRIBUTES (from clip_similarity_cli.py)
 ZERO_SHOT_ATTRIBUTES = {
@@ -221,7 +221,17 @@ async def lifespan(app: FastAPI):
     else:
         print("Warning: ViT model files not found. ViT endpoints will fail.")
         
-    yield
+    try:
+        garment_vision.load()
+    except Exception as error:
+        # The stack is already capability guarded; this is a final protection
+        # against a third-party model runtime breaking the rest of the worker.
+        print(f"[AI-SERVER] Layer 0 garment stack did not initialise: {error}")
+
+    try:
+        yield
+    finally:
+        garment_vision.close()
 
 app = FastAPI(lifespan=lifespan)
 
@@ -254,6 +264,7 @@ def health():
     else:
         status = "math_only"
 
+    layer_zero = garment_vision.capabilities()
     return {
         "status": status,
         "clip_loaded": clip_ok,
@@ -266,9 +277,14 @@ def health():
             "clip_similarity": clip_ok,
             "clip_zero_shot": clip_ok,
             "vit_attributes": vit_ok,
-            "segmentation": REMBG_OK,
+            "segmentation": layer_zero["segmentation"],
+            "segformer_b2": layer_zero["segformer_b2"],
+            "segmentation_fallback": layer_zero["segmentation_fallback"],
+            "mediapipe_pose": layer_zero["mediapipe_pose"],
+            "silhouette": layer_zero["silhouette"],
             "phash": IMAGEHASH_OK,
         },
+        "layer_zero": layer_zero,
         "clip_model": ("transformers-CLIP" if use_hf_clip else "open_clip") if clip_ok else None,
         "vit_labels": sorted(vit_meta["label_maps"].keys()) if vit_ok else None,
         "device": str(vit_device) if vit_device is not None else None,
@@ -441,10 +457,12 @@ def vit_predict(req: ImageReq):
 @app.post("/segment")
 def segment(req: ImageReq):
     try:
-        img = Image.open(req.image_path).convert("RGBA")
-        cutout = remove(img)
-        alpha = np.array(cutout.split()[-1])
-        y_indices, x_indices = np.where(alpha > 128)
+        img = Image.open(req.image_path).convert("RGB")
+        segmentation = garment_vision.segment(img)
+        if not segmentation.success or segmentation.mask is None or segmentation.cutout is None:
+            return {"error": segmentation.error or "No garment detected", "mask_source": segmentation.source}
+
+        y_indices, x_indices = np.where(segmentation.mask)
         
         if len(y_indices) == 0 or len(x_indices) == 0:
             return {"error": "No foreground detected"}
@@ -468,13 +486,16 @@ def segment(req: ImageReq):
             mathematical_length = "Below Knee / Long"
             
         cutout_path = os.path.join(os.path.dirname(req.image_path), f"cutout_{uuid.uuid4().hex}.png")
-        cutout.save(cutout_path)
+        segmentation.cutout.save(cutout_path)
             
         return {
             "success": True,
             "ratio": ratio,
             "length_category": mathematical_length,
-            "cutout_path": cutout_path
+            "cutout_path": cutout_path,
+            "mask_source": segmentation.source,
+            "mask_confidence": round(segmentation.confidence, 4),
+            "garment_labels": segmentation.labels,
         }
     except Exception as e:
         return {"error": str(e)}
@@ -507,6 +528,42 @@ def channel_texture(req: PairPathReq):
         return compare_texture(req.anchor_path, req.catalog_path)
     except Exception as e:
         return {"success": False, "error": str(e)}
+
+@app.post("/channel/silhouette")
+def channel_silhouette(req: PairPathReq):
+    """Layer 0 — compare garment hemlines against MediaPipe pose landmarks.
+
+    The route deliberately returns no opinion when either image cannot supply
+    both a SegFormer garment mask and visible body landmarks.  It is review
+    evidence only until calibrated labels establish a publish-block threshold.
+    """
+    try:
+        anchor = garment_vision.analyse_silhouette(Image.open(req.anchor_path).convert("RGB"))
+        catalog = garment_vision.analyse_silhouette(Image.open(req.catalog_path).convert("RGB"))
+        if not anchor.get("success") or not catalog.get("success"):
+            missing = []
+            if not anchor.get("success"):
+                missing.append(f"anchor: {anchor.get('error', 'unavailable')}")
+            if not catalog.get("success"):
+                missing.append(f"catalog: {catalog.get('error', 'unavailable')}")
+            return {
+                "success": False,
+                "status": "unavailable",
+                "error": "; ".join(missing),
+                "anchor": anchor,
+                "catalog": catalog,
+            }
+        return {
+            "success": True,
+            "status": "measured",
+            "anchor": anchor,
+            "catalog": catalog,
+            "length_match": anchor["length_category"] == catalog["length_category"],
+            "method": "SegFormer-B2 garment mask + MediaPipe Pose landmarks",
+            "verdict_impact": "review_only_until_calibrated",
+        }
+    except Exception as e:
+        return {"success": False, "status": "unavailable", "error": str(e)}
 
 def _embed_image(path, model, transform):
     img = Image.open(path).convert("RGB")
